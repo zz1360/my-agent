@@ -1,0 +1,47 @@
+spring:
+  application:
+    name: logistics-agent
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/spring_ai_demo?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&sslMode=PREFERRED}
+    username: ${SPRING_DATASOURCE_USERNAME:spring_ai_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  h2:
+    console:
+      enabled: false
+      path: /h2-console
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.superagent.logistics: INFO
+
+agent:
+  demo:
+    seed-date: 2026-06-04
+    reset-on-start: false
+  deepseek:
+    enabled: false
+    base-url: https://api.deepseek.com
+    api-key-file: ${DEEPSEEK_API_KEY_FILE:}
+    model: deepseek-v4-flash
+    temperature: 0.2
+    max-tokens: 1800
+  vector-store:
+    provider: pgvector
+    enabled: true
+    fail-fast: false
+    jdbc-url: ${PGVECTOR_JDBC_URL:jdbc:postgresql://localhost:5432/logistics_agent}
+    username: ${PGVECTOR_USERNAME:logistics_agent}
+    password: ${PGVECTOR_PASSWORD:}
+    table-name: ai_knowledge_vector_chunk
+    dimension: 384
+    initialize-schema: true
+    note: "PGVector selected for local Mac development; see docs/pgvector-local.md."
