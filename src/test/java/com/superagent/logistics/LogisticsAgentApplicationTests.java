@@ -41,7 +41,7 @@ class LogisticsAgentApplicationTests {
                 WHERE tenant_id = ? AND case_id = ?
                 """, String.class, "T001", "rag-cold-chain-policy-hybrid");
 
-        assertThat(migrations).isNotNull().isGreaterThanOrEqualTo(2);
+        assertThat(migrations).isNotNull().isGreaterThanOrEqualTo(3);
         assertThat(evalCases).isNotNull().isGreaterThanOrEqualTo(5);
         assertThat(ragCases).isNotNull().isGreaterThanOrEqualTo(2);
         assertThat(coldChainExpectedDoc).contains("policy-cold-chain-v2");
@@ -279,11 +279,19 @@ class LogisticsAgentApplicationTests {
         assertThat(run.get("results")).anySatisfy(result -> {
             assertThat(result.get("caseId").asText()).isEqualTo("rag-cold-chain-policy-hybrid");
             assertThat(result.get("ragHitRate").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("ragRecallAtK").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("ragPrecisionAtK").asDouble()).isGreaterThan(0);
+            assertThat(result.get("ragMrr").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("ragNdcg").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("ragExpectedTotal").asInt()).isEqualTo(2);
+            assertThat(result.get("ragHitCount").asInt()).isEqualTo(2);
             assertThat(result.get("ragTopDocIds")).anySatisfy(doc ->
                     assertThat(doc.asText()).isEqualTo("policy-cold-chain-v2"));
             assertThat(result.get("ragTopChunkIds")).anySatisfy(chunk ->
                     assertThat(chunk.asText()).isEqualTo("policy-cold-chain-v2-chunk-001"));
-            assertThat(result.get("ragMetricsJson").asText()).contains("\"scores\"");
+            assertThat(result.get("ragMetricsJson").asText())
+                    .contains("\"scores\"", "\"recallAtK\"", "\"precisionAtK\"", "\"mrr\"", "\"ndcg\"",
+                            "\"rerankerProvider\"");
         });
 
         String runId = run.get("runId").asText();

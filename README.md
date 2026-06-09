@@ -10,6 +10,7 @@
 
 ```bash
 scripts/download-bge-small-zh-v1.5.sh
+scripts/download-bge-reranker-base.sh
 ```
 
 ```bash
@@ -29,7 +30,7 @@ mvn -Dmaven.repo.local=/Users/zhangzhuang/Documents/develop/maven_repository spr
   -Dspring-boot.run.arguments="--agent.deepseek.enabled=true --agent.deepseek.api-key-file=/path/to/deepseek-apiKey.txt"
 ```
 
-云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。
+云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。
 
 ## 示例请求
 
@@ -87,7 +88,7 @@ curl -s http://localhost:8080/api/agent/chat \
 
 当前版本没有让模型直连数据库。所有业务数据都通过工具服务查询，知识库检索按租户和角色过滤，最终回答会返回引用、工具调用摘要和 traceId。
 
-知识检索默认使用本机 `BAAI/bge-small-zh-v1.5` ONNX 模型生成 512 维向量，不调用云端 embedding 服务。集成测试为了速度和稳定性仍使用 hashing provider；真实本地 embedding 可用 `TransformersEmbeddingModelTests` 的本地 BGE 参数单独验证。
+知识检索默认使用本机 `BAAI/bge-small-zh-v1.5` ONNX 模型生成 512 维向量，并使用本机 `Xenova/bge-reranker-base` ONNX 模型做候选精排，不调用云端 embedding 或 reranker 服务。集成测试为了速度和稳定性仍使用 hashing embedding 和 lightweight reranker；真实本地模型链路可用专门单测显式验证。
 
 `agent.demo.reset-on-start` 默认是 `false`，云端 MySQL 不会在每次启动时被清空。测试环境仍设置为 `true`，用于每次测试前重建稳定的模拟数据。
 

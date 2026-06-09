@@ -48,6 +48,20 @@ agent:
     tokenizer-options:
       padding: "true"
       truncation: "true"
+  reranker:
+    provider: ${LOCAL_RERANKER_PROVIDER:onnx}
+    fallback-to-lightweight: ${LOCAL_RERANKER_FALLBACK_TO_LIGHTWEIGHT:true}
+    model-name: ${LOCAL_RERANKER_MODEL_NAME:Xenova/bge-reranker-base}
+    model-uri: ${LOCAL_RERANKER_MODEL_URI:file:./.local-models/bge-reranker-base/onnx/model_quantized.onnx}
+    tokenizer-uri: ${LOCAL_RERANKER_TOKENIZER_URI:file:./.local-models/bge-reranker-base/tokenizer.json}
+    model-output-name: ${LOCAL_RERANKER_MODEL_OUTPUT_NAME:logits}
+    max-candidates: ${LOCAL_RERANKER_MAX_CANDIDATES:24}
+    model-weight: ${LOCAL_RERANKER_MODEL_WEIGHT:0.72}
+    rule-weight: ${LOCAL_RERANKER_RULE_WEIGHT:0.28}
+    tokenizer-options:
+      padding: "true"
+      truncation: "true"
+      maxLength: "512"
   vector-store:
     provider: pgvector
     enabled: true

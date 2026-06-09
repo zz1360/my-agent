@@ -106,11 +106,14 @@ public class AgentEvalService implements ApplicationRunner {
             jdbcTemplate.update("""
                     INSERT INTO ai_eval_case_result
                     (run_id, case_id, passed, trace_id, risk_level, latency_ms, failure_reason, response_excerpt,
-                     rag_hit_rate, rag_top_doc_ids, rag_top_chunk_ids, rag_metrics_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     rag_hit_rate, rag_recall_at_k, rag_precision_at_k, rag_mrr, rag_ndcg, rag_expected_total,
+                     rag_hit_count, rag_top_doc_ids, rag_top_chunk_ids, rag_metrics_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, runId, evalCase.caseId(), execution.result().passed(), execution.result().traceId(),
                     execution.result().riskLevel(), execution.result().latencyMs(), execution.result().failureReason(),
                     execution.result().responseExcerpt(), execution.result().ragHitRate(),
+                    execution.result().ragRecallAtK(), execution.result().ragPrecisionAtK(), execution.result().ragMrr(),
+                    execution.result().ragNdcg(), execution.result().ragExpectedTotal(), execution.result().ragHitCount(),
                     joinLines(execution.result().ragTopDocIds()), joinLines(execution.result().ragTopChunkIds()),
                     execution.result().ragMetricsJson(), Timestamp.from(execution.result().createdAt()));
         }
@@ -153,7 +156,8 @@ public class AgentEvalService implements ApplicationRunner {
         } catch (Exception ex) {
             long latencyMs = (System.nanoTime() - start) / 1_000_000;
             return new EvalCaseExecution(new EvalCaseResultResponse(evalCase.caseId(), false, null, null,
-                    latencyMs, "执行异常：" + ex.getMessage(), "", null, List.of(), List.of(), null, Instant.now()), null);
+                    latencyMs, "执行异常：" + ex.getMessage(), "", null, null, null, null, null,
+                    null, null, List.of(), List.of(), null, Instant.now()), null);
         }
     }
 
@@ -178,25 +182,34 @@ public class AgentEvalService implements ApplicationRunner {
                 failures.add("RAG 未命中 chunk：" + expectedChunk);
             }
         }
-        int expectedTotal = expectedDocs.size() + expectedChunks.size();
-        int hits = countHits(docIds, expectedDocs) + countHits(chunkIds, expectedChunks);
-        BigDecimal hitRate = expectedTotal == 0
-                ? BigDecimal.ONE
-                : BigDecimal.valueOf(hits / (double) expectedTotal).setScale(4, java.math.RoundingMode.HALF_UP);
+        RagMetrics ragMetrics = calculateRagMetrics(results, expectedDocs, expectedChunks, topK);
         String metrics = objectMapper.writeValueAsString(Map.of(
                 "query", query,
                 "topK", topK,
-                "hitRate", hitRate,
+                "hitRate", ragMetrics.recallAtK(),
+                "recallAtK", ragMetrics.recallAtK(),
+                "precisionAtK", ragMetrics.precisionAtK(),
+                "mrr", ragMetrics.mrr(),
+                "ndcg", ragMetrics.ndcg(),
+                "expectedTotal", ragMetrics.expectedTotal(),
+                "hitCount", ragMetrics.hitCount(),
                 "scores", results.stream().map(result -> Map.of(
                         "docId", result.chunk().docId(),
                         "chunkId", result.chunk().chunkId(),
-                        "score", result.score()
+                        "score", result.score(),
+                        "vectorScore", result.vectorScore(),
+                        "keywordScore", result.keywordScore(),
+                        "ruleScore", result.ruleScore(),
+                        "rerankerScore", result.rerankerScore() == null ? "" : result.rerankerScore(),
+                        "rerankerProvider", result.rerankerProvider()
                 )).toList()
         ));
         long latencyMs = (System.nanoTime() - start) / 1_000_000;
         return new EvalCaseResultResponse(evalCase.caseId(), failures.isEmpty(), null, null, latencyMs,
                 String.join("；", failures), excerpt(results.isEmpty() ? "" : results.get(0).chunk().content(), 500),
-                hitRate, docIds, chunkIds, metrics, Instant.now());
+                ragMetrics.recallAtK(), ragMetrics.recallAtK(), ragMetrics.precisionAtK(), ragMetrics.mrr(),
+                ragMetrics.ndcg(), ragMetrics.expectedTotal(), ragMetrics.hitCount(), docIds, chunkIds, metrics,
+                Instant.now());
     }
 
     private EvalCaseResultResponse assertResponse(EvalCase evalCase, String traceId, String riskLevel, long latencyMs,
@@ -222,7 +235,8 @@ public class AgentEvalService implements ApplicationRunner {
             failures.add("风险等级不匹配：期望 " + evalCase.riskLevel() + "，实际 " + riskLevel);
         }
         return new EvalCaseResultResponse(evalCase.caseId(), failures.isEmpty(), traceId, riskLevel, latencyMs,
-                String.join("；", failures), excerpt(answer, 500), null, List.of(), List.of(), null, Instant.now());
+                String.join("；", failures), excerpt(answer, 500), null, null, null, null, null,
+                null, null, List.of(), List.of(), null, Instant.now());
     }
 
     private List<EvalCaseResultResponse> findResults(String runId) {
@@ -387,6 +401,12 @@ public class AgentEvalService implements ApplicationRunner {
                 rs.getString("failure_reason"),
                 rs.getString("response_excerpt"),
                 rs.getBigDecimal("rag_hit_rate"),
+                rs.getBigDecimal("rag_recall_at_k"),
+                rs.getBigDecimal("rag_precision_at_k"),
+                rs.getBigDecimal("rag_mrr"),
+                rs.getBigDecimal("rag_ndcg"),
+                nullableInt(rs, "rag_expected_total"),
+                nullableInt(rs, "rag_hit_count"),
                 splitLines(rs.getString("rag_top_doc_ids")),
                 splitLines(rs.getString("rag_top_chunk_ids")),
                 rs.getString("rag_metrics_json"),
@@ -442,6 +462,65 @@ public class AgentEvalService implements ApplicationRunner {
         return hits;
     }
 
+    private RagMetrics calculateRagMetrics(List<KnowledgeSearchResult> results, List<String> expectedDocs,
+                                           List<String> expectedChunks, int topK) {
+        int expectedTotal = expectedDocs.size() + expectedChunks.size();
+        List<String> docIds = distinct(results.stream().map(result -> result.chunk().docId()).toList());
+        List<String> chunkIds = distinct(results.stream().map(result -> result.chunk().chunkId()).toList());
+        int hitCount = countHits(docIds, expectedDocs) + countHits(chunkIds, expectedChunks);
+        BigDecimal recallAtK = ratio(hitCount, expectedTotal);
+
+        int denominator = Math.max(1, Math.min(Math.max(1, topK), results.size()));
+        int relevantResultCount = 0;
+        int firstRelevantRank = 0;
+        double dcg = 0;
+        int limit = Math.min(Math.max(1, topK), results.size());
+        for (int i = 0; i < limit; i++) {
+            KnowledgeSearchResult result = results.get(i);
+            if (isRelevant(result, expectedDocs, expectedChunks)) {
+                relevantResultCount++;
+                if (firstRelevantRank == 0) {
+                    firstRelevantRank = i + 1;
+                }
+                dcg += 1.0 / log2(i + 2);
+            }
+        }
+        int expectedRelevantResults = expectedChunks.isEmpty() ? expectedDocs.size() : expectedChunks.size();
+        int idealRelevantResults = Math.min(Math.max(1, topK), expectedRelevantResults);
+        double idcg = 0;
+        for (int i = 0; i < idealRelevantResults; i++) {
+            idcg += 1.0 / log2(i + 2);
+        }
+        BigDecimal precisionAtK = ratio(relevantResultCount, denominator);
+        BigDecimal mrr = firstRelevantRank == 0 ? BigDecimal.ZERO : scale(1.0 / firstRelevantRank);
+        BigDecimal ndcg = idcg == 0 ? BigDecimal.ZERO : scale(dcg / idcg);
+        return new RagMetrics(recallAtK, precisionAtK, mrr, ndcg, expectedTotal, hitCount);
+    }
+
+    private boolean isRelevant(KnowledgeSearchResult result, List<String> expectedDocs, List<String> expectedChunks) {
+        return expectedDocs.contains(result.chunk().docId()) || expectedChunks.contains(result.chunk().chunkId());
+    }
+
+    private BigDecimal ratio(int numerator, int denominator) {
+        if (denominator <= 0) {
+            return BigDecimal.ONE;
+        }
+        return scale(numerator / (double) denominator);
+    }
+
+    private BigDecimal scale(double value) {
+        return BigDecimal.valueOf(value).setScale(4, java.math.RoundingMode.HALF_UP);
+    }
+
+    private double log2(double value) {
+        return Math.log(value) / Math.log(2);
+    }
+
+    private Integer nullableInt(ResultSet rs, String column) throws SQLException {
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : value;
+    }
+
     private String resolveTenant(String tenantId) {
         return tenantId == null || tenantId.isBlank() ? "T001" : tenantId;
     }
@@ -482,6 +561,16 @@ public class AgentEvalService implements ApplicationRunner {
             List<String> roles,
             String query,
             int topK
+    ) {
+    }
+
+    private record RagMetrics(
+            BigDecimal recallAtK,
+            BigDecimal precisionAtK,
+            BigDecimal mrr,
+            BigDecimal ndcg,
+            int expectedTotal,
+            int hitCount
     ) {
     }
 }

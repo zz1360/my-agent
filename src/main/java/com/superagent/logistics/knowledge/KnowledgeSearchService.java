@@ -28,13 +28,16 @@ public class KnowledgeSearchService {
     private final JdbcTemplate jdbcTemplate;
     private final AgentPermissionService permissionService;
     private final PgVectorKnowledgeStore vectorKnowledgeStore;
+    private final KnowledgeReranker knowledgeReranker;
 
     public KnowledgeSearchService(JdbcTemplate jdbcTemplate,
                                   AgentPermissionService permissionService,
-                                  PgVectorKnowledgeStore vectorKnowledgeStore) {
+                                  PgVectorKnowledgeStore vectorKnowledgeStore,
+                                  KnowledgeReranker knowledgeReranker) {
         this.jdbcTemplate = jdbcTemplate;
         this.permissionService = permissionService;
         this.vectorKnowledgeStore = vectorKnowledgeStore;
+        this.knowledgeReranker = knowledgeReranker;
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK) {
@@ -71,13 +74,14 @@ public class KnowledgeSearchService {
         }
         double maxVectorScore = candidates.values().stream().mapToDouble(candidate -> candidate.vectorScore).max().orElse(0);
         double maxKeywordScore = candidates.values().stream().mapToDouble(candidate -> candidate.keywordScore).max().orElse(0);
-        return candidates.values().stream()
-                .map(candidate -> new KnowledgeSearchResult(candidate.chunk,
-                        rerankScore(candidate, terms, query, maxVectorScore, maxKeywordScore)))
-                .filter(result -> result.score() > 0)
-                .sorted(Comparator.comparingDouble(KnowledgeSearchResult::score).reversed())
-                .limit(resultLimit)
+        List<KnowledgeRerankCandidate> rerankCandidates = candidates.values().stream()
+                .map(candidate -> new KnowledgeRerankCandidate(candidate.chunk, normalizedScore(candidate.vectorScore, maxVectorScore),
+                        normalizedScore(candidate.keywordScore, maxKeywordScore),
+                        ruleScore(candidate, terms, query, maxVectorScore, maxKeywordScore)))
+                .filter(candidate -> candidate.ruleScore() > 0)
+                .sorted(Comparator.comparingDouble(KnowledgeRerankCandidate::ruleScore).reversed())
                 .toList();
+        return knowledgeReranker.rerank(query, rerankCandidates, resultLimit);
     }
 
     private List<KnowledgeChunk> findActiveChunks(String tenantId) {
@@ -140,13 +144,17 @@ public class KnowledgeSearchService {
         return score;
     }
 
-    private double rerankScore(Candidate candidate, Set<String> terms, String originalQuery,
-                               double maxVectorScore, double maxKeywordScore) {
-        double vector = maxVectorScore <= 0 ? 0 : candidate.vectorScore / maxVectorScore;
-        double keyword = maxKeywordScore <= 0 ? 0 : candidate.keywordScore / maxKeywordScore;
+    private double ruleScore(Candidate candidate, Set<String> terms, String originalQuery,
+                             double maxVectorScore, double maxKeywordScore) {
+        double vector = normalizedScore(candidate.vectorScore, maxVectorScore);
+        double keyword = normalizedScore(candidate.keywordScore, maxKeywordScore);
         double intent = intentBoost(candidate.chunk, originalQuery);
         double coverage = termCoverage(candidate.chunk, terms);
         return vector * 0.56 + keyword * 0.30 + intent * 0.08 + coverage * 0.06;
+    }
+
+    private double normalizedScore(double score, double maxScore) {
+        return maxScore <= 0 ? 0 : score / maxScore;
     }
 
     private double intentBoost(KnowledgeChunk chunk, String originalQuery) {

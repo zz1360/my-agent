@@ -21,5 +21,7 @@ agent:
     enabled: false
   embedding:
     provider: hashing
+  reranker:
+    provider: lightweight
   deepseek:
     enabled: false
