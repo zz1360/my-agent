@@ -32,9 +32,19 @@ class LogisticsAgentApplicationTests {
     void flywayMigratesSchemaAndSeedsEvalCases() {
         Integer migrations = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM flyway_schema_history", Integer.class);
         Integer evalCases = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_case WHERE tenant_id = ?", Integer.class, "T001");
+        Integer ragCases = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM ai_eval_case
+                WHERE tenant_id = ? AND eval_type = 'RAG'
+                """, Integer.class, "T001");
+        String coldChainExpectedDoc = jdbcTemplate.queryForObject("""
+                SELECT expected_rag_doc_ids FROM ai_eval_case
+                WHERE tenant_id = ? AND case_id = ?
+                """, String.class, "T001", "rag-cold-chain-policy-hybrid");
 
-        assertThat(migrations).isNotNull().isGreaterThan(0);
-        assertThat(evalCases).isNotNull().isGreaterThanOrEqualTo(3);
+        assertThat(migrations).isNotNull().isGreaterThanOrEqualTo(2);
+        assertThat(evalCases).isNotNull().isGreaterThanOrEqualTo(5);
+        assertThat(ragCases).isNotNull().isGreaterThanOrEqualTo(2);
+        assertThat(coldChainExpectedDoc).contains("policy-cold-chain-v2");
     }
 
     @Test
@@ -210,6 +220,48 @@ class LogisticsAgentApplicationTests {
     }
 
     @Test
+    void hybridSearchRanksColdChainPolicyForTemperatureQuery() throws Exception {
+        String body = mockMvc.perform(get("/api/knowledge/search")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("query", "冷链运输温度超过 10C 后客服应该怎么处理？")
+                        .param("topK", "5"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode results = objectMapper.readTree(body);
+        assertThat(results).isNotEmpty();
+        assertThat(results.get(0).get("docId").asText()).isEqualTo("policy-cold-chain-v2");
+        assertThat(results.get(0).get("chunkId").asText()).isEqualTo("policy-cold-chain-v2-chunk-001");
+        assertThat(results.get(0).get("excerpt").asText()).contains("温控异常工单");
+    }
+
+    @Test
+    void evalCaseApiExposesRagExpectations() throws Exception {
+        String body = mockMvc.perform(get("/api/agent/evals/cases")
+                        .param("tenantId", "T001")
+                        .param("enabledOnly", "true"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode cases = objectMapper.readTree(body);
+        assertThat(cases).anySatisfy(item -> {
+            assertThat(item.get("caseId").asText()).isEqualTo("rag-delay-policy-hybrid");
+            assertThat(item.get("evalType").asText()).isEqualTo("RAG");
+            assertThat(item.get("expectedRagDocIds")).anySatisfy(doc ->
+                    assertThat(doc.asText()).isEqualTo("policy-delay-v3"));
+            assertThat(item.get("expectedRagChunkIds")).anySatisfy(chunk ->
+                    assertThat(chunk.asText()).isEqualTo("policy-delay-v3-chunk-001"));
+            assertThat(item.get("expectedTopK").asInt()).isEqualTo(5);
+            assertThat(item.get("ragQuery").asText()).contains("补偿");
+        });
+    }
+
+    @Test
     void defaultAgentEvalRunPasses() throws Exception {
         String runBody = mockMvc.perform(post("/api/agent/evals/run")
                         .param("tenantId", "T001"))
@@ -219,11 +271,20 @@ class LogisticsAgentApplicationTests {
                 .getContentAsString();
 
         JsonNode run = objectMapper.readTree(runBody);
-        assertThat(run.get("totalCases").asInt()).isGreaterThanOrEqualTo(3);
+        assertThat(run.get("totalCases").asInt()).isGreaterThanOrEqualTo(5);
         assertThat(run.get("failedCases").asInt()).isEqualTo(0);
         assertThat(run.get("status").asText()).isEqualTo("PASSED");
         assertThat(run.get("results")).allSatisfy(result ->
                 assertThat(result.get("passed").asBoolean()).isTrue());
+        assertThat(run.get("results")).anySatisfy(result -> {
+            assertThat(result.get("caseId").asText()).isEqualTo("rag-cold-chain-policy-hybrid");
+            assertThat(result.get("ragHitRate").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("ragTopDocIds")).anySatisfy(doc ->
+                    assertThat(doc.asText()).isEqualTo("policy-cold-chain-v2"));
+            assertThat(result.get("ragTopChunkIds")).anySatisfy(chunk ->
+                    assertThat(chunk.asText()).isEqualTo("policy-cold-chain-v2-chunk-001"));
+            assertThat(result.get("ragMetricsJson").asText()).contains("\"scores\"");
+        });
 
         String runId = run.get("runId").asText();
         String foundBody = mockMvc.perform(get("/api/agent/evals/runs/{runId}", runId))

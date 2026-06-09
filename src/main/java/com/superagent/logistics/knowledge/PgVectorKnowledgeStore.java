@@ -23,10 +23,10 @@ public class PgVectorKnowledgeStore {
     private static final Logger log = LoggerFactory.getLogger(PgVectorKnowledgeStore.class);
 
     private final PgVectorProperties properties;
-    private final LocalTextEmbeddingService embeddingService;
+    private final TextEmbeddingService embeddingService;
     private volatile boolean ready;
 
-    public PgVectorKnowledgeStore(PgVectorProperties properties, LocalTextEmbeddingService embeddingService) {
+    public PgVectorKnowledgeStore(PgVectorProperties properties, TextEmbeddingService embeddingService) {
         this.properties = properties;
         this.embeddingService = embeddingService;
     }
@@ -73,8 +73,9 @@ public class PgVectorKnowledgeStore {
             }
             replaceTenantChunks(connection, tenantId, chunks);
             ready = true;
-            log.info("PGVector knowledge store synced: tenantId={}, chunks={}, table={}", tenantId, chunks.size(), tableName());
-        } catch (SQLException ex) {
+            log.info("PGVector knowledge store synced: tenantId={}, chunks={}, table={}, embeddingProvider={}",
+                    tenantId, chunks.size(), tableName(), embeddingService.providerName());
+        } catch (RuntimeException | SQLException ex) {
             ready = false;
             String message = "PGVector knowledge store is not ready: " + ex.getMessage();
             if (properties.isFailFast()) {
@@ -88,7 +89,7 @@ public class PgVectorKnowledgeStore {
         if (!isReady()) {
             return List.of();
         }
-        float[] embedding = embeddingService.embed(query);
+        float[] embedding = requireDimension(embeddingService.embedQuery(query));
         String vector = toVectorLiteral(embedding);
         String sql = """
                 SELECT doc_id, chunk_id, title_path, content, metadata, acl_roles,
@@ -119,7 +120,7 @@ public class PgVectorKnowledgeStore {
                 }
                 return results;
             }
-        } catch (SQLException ex) {
+        } catch (RuntimeException | SQLException ex) {
             ready = false;
             log.warn("PGVector search failed; keyword fallback remains available: {}", ex.getMessage());
             return List.of();
@@ -172,7 +173,8 @@ public class PgVectorKnowledgeStore {
                 statement.setString(5, chunk.content());
                 statement.setString(6, chunk.metadata());
                 statement.setString(7, chunk.aclRoles());
-                statement.setString(8, toVectorLiteral(embeddingService.embed(chunk.title() + "\n" + chunk.content())));
+                float[] embedding = requireDimension(embeddingService.embedDocument(chunk.title() + "\n" + chunk.content()));
+                statement.setString(8, toVectorLiteral(embedding));
                 statement.setTimestamp(9, now);
                 statement.setTimestamp(10, now);
                 statement.addBatch();
@@ -190,6 +192,14 @@ public class PgVectorKnowledgeStore {
             builder.append(String.format(Locale.ROOT, "%.6f", vector[i]));
         }
         return builder.append(']').toString();
+    }
+
+    private float[] requireDimension(float[] vector) {
+        if (vector.length != properties.getDimension()) {
+            throw new IllegalStateException("Embedding dimension mismatch: model returned " + vector.length
+                    + " but agent.vector-store.dimension is " + properties.getDimension());
+        }
+        return vector;
     }
 
     private String tableName() {

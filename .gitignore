@@ -27,3 +27,6 @@ application-*.local.yml
 
 # Maven / build cache
 .mvn/wrapper/maven-wrapper.jar
+
+# Local embedding model files
+.local-models/

@@ -1,6 +1,8 @@
 package com.superagent.logistics.api.dto;
 
+import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 public record EvalCaseResultResponse(
         String caseId,
@@ -10,6 +12,10 @@ public record EvalCaseResultResponse(
         long latencyMs,
         String failureReason,
         String responseExcerpt,
+        BigDecimal ragHitRate,
+        List<String> ragTopDocIds,
+        List<String> ragTopChunkIds,
+        String ragMetricsJson,
         Instant createdAt
 ) {
 }

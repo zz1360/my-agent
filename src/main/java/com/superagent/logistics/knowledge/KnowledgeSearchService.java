@@ -9,9 +9,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -36,31 +38,60 @@ public class KnowledgeSearchService {
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK) {
+        int resultLimit = Math.max(1, Math.min(topK, 8));
+        List<KnowledgeChunk> activeChunks = findActiveChunks(context.tenantId()).stream()
+                .filter(chunk -> permissionService.canReadKnowledge(context, chunk.aclRoles()))
+                .toList();
+        Map<String, KnowledgeChunk> activeByKey = new LinkedHashMap<>();
+        for (KnowledgeChunk chunk : activeChunks) {
+            activeByKey.put(chunkKey(chunk), chunk);
+        }
+        Set<String> terms = extractTerms(query);
+        Map<String, Candidate> candidates = new LinkedHashMap<>();
+
         if (vectorKnowledgeStore.isReady()) {
-            List<KnowledgeSearchResult> vectorResults = vectorKnowledgeStore.search(context.tenantId(), query, topK)
-                    .stream()
-                    .filter(result -> permissionService.canReadKnowledge(context, result.chunk().aclRoles()))
-                    .limit(Math.max(1, Math.min(topK, 8)))
-                    .toList();
-            if (!vectorResults.isEmpty()) {
-                return vectorResults;
+            for (KnowledgeSearchResult vectorResult : vectorKnowledgeStore.search(context.tenantId(), query, resultLimit * 4)) {
+                KnowledgeChunk activeChunk = activeByKey.get(chunkKey(vectorResult.chunk()));
+                if (activeChunk != null) {
+                    Candidate candidate = candidates.computeIfAbsent(chunkKey(activeChunk), key -> new Candidate(activeChunk));
+                    candidate.vectorScore = Math.max(candidate.vectorScore, Math.max(0, vectorResult.score()));
+                }
             }
         }
-        List<KnowledgeChunk> chunks = jdbcTemplate.query("""
+
+        for (KnowledgeChunk chunk : activeChunks) {
+            double keywordScore = keywordScore(chunk, terms, query);
+            if (keywordScore > 0) {
+                Candidate candidate = candidates.computeIfAbsent(chunkKey(chunk), key -> new Candidate(chunk));
+                candidate.keywordScore = Math.max(candidate.keywordScore, keywordScore);
+            }
+        }
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        double maxVectorScore = candidates.values().stream().mapToDouble(candidate -> candidate.vectorScore).max().orElse(0);
+        double maxKeywordScore = candidates.values().stream().mapToDouble(candidate -> candidate.keywordScore).max().orElse(0);
+        return candidates.values().stream()
+                .map(candidate -> new KnowledgeSearchResult(candidate.chunk,
+                        rerankScore(candidate, terms, query, maxVectorScore, maxKeywordScore)))
+                .filter(result -> result.score() > 0)
+                .sorted(Comparator.comparingDouble(KnowledgeSearchResult::score).reversed())
+                .limit(resultLimit)
+                .toList();
+    }
+
+    private List<KnowledgeChunk> findActiveChunks(String tenantId) {
+        return jdbcTemplate.query("""
                 SELECT c.doc_id, c.chunk_id, c.title_path, c.content, c.metadata, c.acl_roles
                 FROM ai_knowledge_chunk c
                 JOIN ai_knowledge_document d
                   ON d.tenant_id = c.tenant_id AND d.doc_id = c.doc_id
                 WHERE c.tenant_id = ? AND d.status = 'ACTIVE'
-                """, this::mapChunk, context.tenantId());
-        Set<String> terms = extractTerms(query);
-        return chunks.stream()
-                .filter(chunk -> permissionService.canReadKnowledge(context, chunk.aclRoles()))
-                .map(chunk -> new KnowledgeSearchResult(chunk, score(chunk, terms, query)))
-                .filter(result -> result.score() > 0)
-                .sorted(Comparator.comparingDouble(KnowledgeSearchResult::score).reversed())
-                .limit(Math.max(1, Math.min(topK, 8)))
-                .toList();
+                """, this::mapChunk, tenantId);
+    }
+
+    private String chunkKey(KnowledgeChunk chunk) {
+        return chunk.docId() + "/" + chunk.chunkId();
     }
 
     private Set<String> extractTerms(String query) {
@@ -82,7 +113,7 @@ public class KnowledgeSearchService {
         return terms;
     }
 
-    private double score(KnowledgeChunk chunk, Set<String> terms, String originalQuery) {
+    private double keywordScore(KnowledgeChunk chunk, Set<String> terms, String originalQuery) {
         if (terms.isEmpty()) {
             return 0;
         }
@@ -109,6 +140,48 @@ public class KnowledgeSearchService {
         return score;
     }
 
+    private double rerankScore(Candidate candidate, Set<String> terms, String originalQuery,
+                               double maxVectorScore, double maxKeywordScore) {
+        double vector = maxVectorScore <= 0 ? 0 : candidate.vectorScore / maxVectorScore;
+        double keyword = maxKeywordScore <= 0 ? 0 : candidate.keywordScore / maxKeywordScore;
+        double intent = intentBoost(candidate.chunk, originalQuery);
+        double coverage = termCoverage(candidate.chunk, terms);
+        return vector * 0.56 + keyword * 0.30 + intent * 0.08 + coverage * 0.06;
+    }
+
+    private double intentBoost(KnowledgeChunk chunk, String originalQuery) {
+        if (originalQuery == null || originalQuery.isBlank()) {
+            return 0;
+        }
+        String query = originalQuery.toUpperCase(Locale.ROOT);
+        String title = chunk.title().toUpperCase(Locale.ROOT);
+        String content = chunk.content().toUpperCase(Locale.ROOT);
+        double boost = 0;
+        if ((query.contains("赔") || query.contains("补偿")) && (title.contains("赔付") || content.contains("赔付"))) {
+            boost += 0.45;
+        }
+        if ((query.contains("怎么处理") || query.contains("怎么办")) && (title.contains("SOP") || content.contains("处理"))) {
+            boost += 0.35;
+        }
+        if ((query.contains("冷链") || query.contains("温度") || query.contains("超温"))
+                && (title.contains("冷链") || content.contains("温控"))) {
+            boost += 0.45;
+        }
+        if ((query.contains("投诉") || query.contains("风险")) && (title.contains("风险") || content.contains("投诉"))) {
+            boost += 0.30;
+        }
+        return Math.min(1.0, boost);
+    }
+
+    private double termCoverage(KnowledgeChunk chunk, Set<String> terms) {
+        if (terms.isEmpty()) {
+            return 0;
+        }
+        String haystack = (chunk.title() + "\n" + chunk.content()).toUpperCase(Locale.ROOT);
+        long matches = terms.stream().filter(haystack::contains).count();
+        return Math.min(1.0, matches / (double) terms.size());
+    }
+
     private KnowledgeChunk mapChunk(ResultSet rs, int rowNum) throws SQLException {
         return new KnowledgeChunk(
                 rs.getString("doc_id"),
@@ -129,5 +202,15 @@ public class KnowledgeSearchService {
         questions.add("帮我生成客户 C001 本周服务诊断摘要。");
         questions.add("华东区高风险客户有哪些？");
         return questions;
+    }
+
+    private static class Candidate {
+        private final KnowledgeChunk chunk;
+        private double vectorScore;
+        private double keywordScore;
+
+        private Candidate(KnowledgeChunk chunk) {
+            this.chunk = chunk;
+        }
     }
 }

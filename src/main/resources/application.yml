@@ -34,6 +34,20 @@ agent:
     model: deepseek-v4-flash
     temperature: 0.2
     max-tokens: 1800
+  embedding:
+    provider: ${LOCAL_EMBEDDING_PROVIDER:transformers}
+    fallback-to-hashing: ${LOCAL_EMBEDDING_FALLBACK_TO_HASHING:false}
+    model-name: ${LOCAL_EMBEDDING_MODEL_NAME:BAAI/bge-small-zh-v1.5}
+    model-uri: ${LOCAL_EMBEDDING_MODEL_URI:file:./.local-models/bge-small-zh-v1.5/onnx/model_quantized.onnx}
+    tokenizer-uri: ${LOCAL_EMBEDDING_TOKENIZER_URI:file:./.local-models/bge-small-zh-v1.5/tokenizer.json}
+    model-output-name: ${LOCAL_EMBEDDING_MODEL_OUTPUT_NAME:last_hidden_state}
+    cache-directory: ${LOCAL_EMBEDDING_CACHE_DIR:${java.io.tmpdir}/spring-ai-onnx-model}
+    disable-caching: ${LOCAL_EMBEDDING_DISABLE_CACHING:true}
+    query-instruction: ${LOCAL_EMBEDDING_QUERY_INSTRUCTION:为这个句子生成表示以用于检索相关文章：}
+    passage-instruction: ${LOCAL_EMBEDDING_PASSAGE_INSTRUCTION:}
+    tokenizer-options:
+      padding: "true"
+      truncation: "true"
   vector-store:
     provider: pgvector
     enabled: true
@@ -41,7 +55,7 @@ agent:
     jdbc-url: ${PGVECTOR_JDBC_URL:jdbc:postgresql://localhost:5432/logistics_agent}
     username: ${PGVECTOR_USERNAME:logistics_agent}
     password: ${PGVECTOR_PASSWORD:}
-    table-name: ai_knowledge_vector_chunk
-    dimension: 384
+    table-name: ai_knowledge_vector_chunk_v04
+    dimension: 512
     initialize-schema: true
     note: "PGVector selected for local Mac development; see docs/pgvector-local.md."

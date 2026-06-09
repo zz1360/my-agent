@@ -19,5 +19,7 @@ agent:
     reset-on-start: true
   vector-store:
     enabled: false
+  embedding:
+    provider: hashing
   deepseek:
     enabled: false

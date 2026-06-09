@@ -1,12 +1,12 @@
 # 本机 PGVector 方案
 
-第一版真实向量库选择 PGVector。
+本机真实向量库选择 PGVector。
 
 原因：
 
 - Mac 本机安装简单，可以用 Docker 一条命令启动。
 - PostgreSQL + pgvector 适合从 MVP 过渡到生产。
-- Spring AI 有 PGVector VectorStore 适配，后续可以把当前 `KnowledgeSearchService` 替换为真实向量召回。
+- 当前系统已经把知识 chunk 同步到 PGVector，并使用本地 BGE embedding 做向量召回。
 - 向量库和业务库解耦；当前业务库默认使用云端 MySQL，测试环境仍可用 H2。
 
 ## Homebrew 启动方式
@@ -49,20 +49,20 @@ curl -s http://localhost:8080/api/demo/vector-store/status
 期望结果：
 
 ```json
-{"provider":"pgvector","enabled":true,"ready":true,"chunks":10,"table":"ai_knowledge_vector_chunk"}
+{"provider":"pgvector","enabled":true,"ready":true,"chunks":10,"table":"ai_knowledge_vector_chunk_v04"}
 ```
 
 直接检查向量表：
 
 ```bash
 /opt/homebrew/opt/postgresql@17/bin/psql -h localhost -p 5432 -d logistics_agent \
-  -Atc "select count(*), min(vector_dims(embedding)), max(vector_dims(embedding)) from ai_knowledge_vector_chunk;"
+  -Atc "select count(*), min(vector_dims(embedding)), max(vector_dims(embedding)) from ai_knowledge_vector_chunk_v04;"
 ```
 
 期望结果类似：
 
 ```text
-10|384|384
+10|512|512
 ```
 
 ## Docker 启动方式
@@ -82,9 +82,11 @@ user: logistics_agent
 password: 通过 PGVECTOR_PASSWORD 环境变量提供
 ```
 
-后续接入点：
+v0.4 接入点：
 
-- 当前已实现：启动时将业务库中的 `ai_knowledge_chunk` 同步到 PGVector 表 `ai_knowledge_vector_chunk`。
-- 当前已实现：`KnowledgeSearchService.search(...)` 优先使用 PGVector 的 `<=>` 向量相似度检索。
-- 后续可增强：将本地 hashing embedding 替换成真实 embedding 模型。
+- 当前已实现：启动时将业务库中的 `ai_knowledge_chunk` 同步到 PGVector 表 `ai_knowledge_vector_chunk_v04`。
+- 当前已实现：默认使用本机 `BAAI/bge-small-zh-v1.5` ONNX 模型生成 512 维语义向量。
+- 当前已实现：`KnowledgeSearchService.search(...)` 会合并 PGVector 向量召回和关键词召回，再做轻量 rerank。
 - 后续可增强：增加 HNSW / IVFFlat 索引和文档增量入库接口。
+
+如果本机曾经创建过旧版 `ai_knowledge_vector_chunk` 384 维表，可以保留它不动。v0.4 默认使用新表名，避免 384 维旧表和 512 维 BGE 向量发生维度冲突。

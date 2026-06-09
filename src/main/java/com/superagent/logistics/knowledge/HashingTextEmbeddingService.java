@@ -1,22 +1,38 @@
 package com.superagent.logistics.knowledge;
 
-import com.superagent.logistics.config.PgVectorProperties;
-import org.springframework.stereotype.Service;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-@Service
-public class LocalTextEmbeddingService {
+public class HashingTextEmbeddingService implements TextEmbeddingService {
 
     private final int dimension;
 
-    public LocalTextEmbeddingService(PgVectorProperties properties) {
-        this.dimension = properties.getDimension();
+    public HashingTextEmbeddingService(int dimension) {
+        this.dimension = dimension;
     }
 
-    public float[] embed(String text) {
+    @Override
+    public float[] embedQuery(String text) {
+        return embed(text);
+    }
+
+    @Override
+    public float[] embedDocument(String text) {
+        return embed(text);
+    }
+
+    @Override
+    public String providerName() {
+        return "hashing";
+    }
+
+    @Override
+    public boolean semantic() {
+        return false;
+    }
+
+    private float[] embed(String text) {
         float[] vector = new float[dimension];
         for (String feature : features(text)) {
             int hash = feature.hashCode();
