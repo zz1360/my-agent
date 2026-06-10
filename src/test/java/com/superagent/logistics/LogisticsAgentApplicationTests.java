@@ -45,6 +45,12 @@ class LogisticsAgentApplicationTests {
         assertThat(evalCases).isNotNull().isGreaterThanOrEqualTo(5);
         assertThat(ragCases).isNotNull().isGreaterThanOrEqualTo(2);
         assertThat(coldChainExpectedDoc).contains("policy-cold-chain-v2");
+        Integer ragExperiments = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM ai_rag_experiment
+                WHERE tenant_id = ?
+                """, Integer.class, "T001");
+        assertThat(migrations).isGreaterThanOrEqualTo(5);
+        assertThat(ragExperiments).isNotNull().isGreaterThanOrEqualTo(2);
     }
 
     @Test
@@ -378,6 +384,83 @@ class LogisticsAgentApplicationTests {
             assertThat(item.get("expectedTopK").asInt()).isEqualTo(5);
             assertThat(item.get("ragQuery").asText()).contains("补偿");
         });
+    }
+
+    @Test
+    void ragExperimentLabCanCreateRunAndCompareRetrievalModes() throws Exception {
+        String defaultsBody = mockMvc.perform(get("/api/rag/experiments")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode defaults = objectMapper.readTree(defaultsBody);
+        assertThat(defaults).anySatisfy(item ->
+                assertThat(item.get("experimentId").asText()).isEqualTo("raglab-cold-chain-treatment"));
+
+        String payload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-rag-test",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "experimentId": "raglab-test-cold-chain",
+                  "name": "冷链超温实验台测试",
+                  "description": "验证不同检索模式是否命中冷链温控规范",
+                  "query": "冷链运输温度超过 10C 后客服应该怎么处理？",
+                  "expectedDocIds": ["policy-cold-chain-v2"],
+                  "expectedChunkIds": ["policy-cold-chain-v2-chunk-001"],
+                  "topK": 5,
+                  "modes": ["KEYWORD_ONLY", "HYBRID_RERANKER"]
+                }
+                """;
+
+        String experimentBody = mockMvc.perform(post("/api/rag/experiments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode experiment = objectMapper.readTree(experimentBody);
+        assertThat(experiment.get("experimentId").asText()).isEqualTo("raglab-test-cold-chain");
+        assertThat(experiment.get("modes")).hasSize(2);
+
+        String runBody = mockMvc.perform(post("/api/rag/experiments/{experimentId}/run", "raglab-test-cold-chain")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("modes", "KEYWORD_ONLY")
+                        .param("modes", "HYBRID_RERANKER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode runs = objectMapper.readTree(runBody);
+        assertThat(runs).hasSize(2);
+        assertThat(runs).allSatisfy(result -> {
+            assertThat(result.get("status").asText()).isEqualTo("PASSED");
+            assertThat(result.get("recallAtK").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("mrr").asDouble()).isEqualTo(1.0);
+            assertThat(result.get("topDocIds")).anySatisfy(doc ->
+                    assertThat(doc.asText()).isEqualTo("policy-cold-chain-v2"));
+            assertThat(result.get("metricsJson").asText())
+                    .contains("\"mode\"", "\"scores\"", "\"latencyMs\"", "\"recallAtK\"");
+        });
+        assertThat(runs).anySatisfy(result ->
+                assertThat(result.get("mode").asText()).isEqualTo("KEYWORD_ONLY"));
+        assertThat(runs).anySatisfy(result ->
+                assertThat(result.get("mode").asText()).isEqualTo("HYBRID_RERANKER"));
+
+        String historyBody = mockMvc.perform(get("/api/rag/experiments/{experimentId}/runs", "raglab-test-cold-chain")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("limit", "10"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode history = objectMapper.readTree(historyBody);
+        assertThat(history).hasSizeGreaterThanOrEqualTo(2);
     }
 
     @Test

@@ -68,6 +68,8 @@ public class DemoDataInitializer implements ApplicationRunner {
         jdbcTemplate.execute("DELETE FROM ai_eval_case_result");
         jdbcTemplate.execute("DELETE FROM ai_eval_run");
         jdbcTemplate.execute("DELETE FROM ai_eval_case");
+        jdbcTemplate.execute("DELETE FROM ai_rag_experiment_run");
+        jdbcTemplate.execute("DELETE FROM ai_rag_experiment");
         jdbcTemplate.execute("DELETE FROM ai_knowledge_index_job");
         jdbcTemplate.execute("DELETE FROM ai_knowledge_chunk");
         jdbcTemplate.execute("DELETE FROM ai_knowledge_document");

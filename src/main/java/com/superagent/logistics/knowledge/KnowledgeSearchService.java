@@ -41,7 +41,13 @@ public class KnowledgeSearchService {
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK) {
+        return search(context, query, topK, KnowledgeSearchOptions.defaults());
+    }
+
+    public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK,
+                                              KnowledgeSearchOptions options) {
         int resultLimit = Math.max(1, Math.min(topK, 8));
+        KnowledgeSearchOptions effectiveOptions = options == null ? KnowledgeSearchOptions.defaults() : options;
         List<KnowledgeChunk> activeChunks = findActiveChunks(context.tenantId()).stream()
                 .filter(chunk -> permissionService.canReadKnowledge(context, chunk.aclRoles()))
                 .toList();
@@ -52,7 +58,7 @@ public class KnowledgeSearchService {
         Set<String> terms = extractTerms(query);
         Map<String, Candidate> candidates = new LinkedHashMap<>();
 
-        if (vectorKnowledgeStore.isReady()) {
+        if (effectiveOptions.useVector() && vectorKnowledgeStore.isReady()) {
             for (KnowledgeSearchResult vectorResult : vectorKnowledgeStore.search(context.tenantId(), query, resultLimit * 4)) {
                 KnowledgeChunk activeChunk = activeByKey.get(chunkKey(vectorResult.chunk()));
                 if (activeChunk != null) {
@@ -62,11 +68,13 @@ public class KnowledgeSearchService {
             }
         }
 
-        for (KnowledgeChunk chunk : activeChunks) {
-            double keywordScore = keywordScore(chunk, terms, query);
-            if (keywordScore > 0) {
-                Candidate candidate = candidates.computeIfAbsent(chunkKey(chunk), key -> new Candidate(chunk));
-                candidate.keywordScore = Math.max(candidate.keywordScore, keywordScore);
+        if (effectiveOptions.useKeyword()) {
+            for (KnowledgeChunk chunk : activeChunks) {
+                double keywordScore = keywordScore(chunk, terms, query);
+                if (keywordScore > 0) {
+                    Candidate candidate = candidates.computeIfAbsent(chunkKey(chunk), key -> new Candidate(chunk));
+                    candidate.keywordScore = Math.max(candidate.keywordScore, keywordScore);
+                }
             }
         }
         if (candidates.isEmpty()) {
@@ -81,6 +89,13 @@ public class KnowledgeSearchService {
                 .filter(candidate -> candidate.ruleScore() > 0)
                 .sorted(Comparator.comparingDouble(KnowledgeRerankCandidate::ruleScore).reversed())
                 .toList();
+        if (!effectiveOptions.useReranker()) {
+            return rerankCandidates.stream()
+                    .limit(resultLimit)
+                    .map(candidate -> new KnowledgeSearchResult(candidate.chunk(), candidate.ruleScore(),
+                            candidate.vectorScore(), candidate.keywordScore(), candidate.ruleScore(), null, "rule-only"))
+                    .toList();
+        }
         return knowledgeReranker.rerank(query, rerankCandidates, resultLimit);
     }
 
