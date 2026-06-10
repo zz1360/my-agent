@@ -30,7 +30,7 @@ mvn -Dmaven.repo.local=/Users/zhangzhuang/Documents/develop/maven_repository spr
   -Dspring-boot.run.arguments="--agent.deepseek.enabled=true --agent.deepseek.api-key-file=/path/to/deepseek-apiKey.txt"
 ```
 
-云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。v0.6 知识库运营闭环见 [docs/v06-knowledge-ops-workflow.md](docs/v06-knowledge-ops-workflow.md)。v0.7 RAG 检索质量实验台见 [docs/v07-rag-experiment-lab.md](docs/v07-rag-experiment-lab.md)。v0.8 Agent 动作草稿与人工复核见 [docs/v08-agent-action-workflow.md](docs/v08-agent-action-workflow.md)。v0.9 动作执行适配器与低风险自动化见 [docs/v09-action-execution-automation.md](docs/v09-action-execution-automation.md)。
+云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。v0.6 知识库运营闭环见 [docs/v06-knowledge-ops-workflow.md](docs/v06-knowledge-ops-workflow.md)。v0.7 RAG 检索质量实验台见 [docs/v07-rag-experiment-lab.md](docs/v07-rag-experiment-lab.md)。v0.8 Agent 动作草稿与人工复核见 [docs/v08-agent-action-workflow.md](docs/v08-agent-action-workflow.md)。v0.9 动作执行适配器与低风险自动化见 [docs/v09-action-execution-automation.md](docs/v09-action-execution-automation.md)。v1.0 业务执行闭环、幂等与重试见 [docs/v10-business-execution-idempotency-retry.md](docs/v10-business-execution-idempotency-retry.md)。
 
 ## 示例请求
 
@@ -76,8 +76,9 @@ curl -s http://localhost:8080/api/agent/chat \
 - `GET /api/agent/actions`：查询动作草稿，可按客户和状态过滤
 - `GET /api/agent/actions/{actionId}`：查看单个动作草稿和证据
 - `POST /api/agent/actions/{actionId}/review`：由运营或管理员审批、驳回或标记动作已执行
-- `POST /api/agent/actions/{actionId}/execute`：执行单个已审批动作，高风险动作需显式 `force=true`
+- `POST /api/agent/actions/{actionId}/execute`：执行单个已审批动作，支持幂等键，高风险动作需显式 `force=true`
 - `GET /api/agent/actions/{actionId}/executions`：查看动作执行日志
+- `POST /api/agent/actions/executions/{executionId}/retry`：重试失败的动作执行记录
 - `POST /api/agent/actions/automation/run`：自动执行客户维度的低风险已审批动作
 - `POST /api/knowledge/documents/preview`：预览文档切片，不落库
 - `POST /api/knowledge/documents`：新增或更新知识文档，支持版本组、草稿/生效状态和索引任务

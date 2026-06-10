@@ -7,6 +7,8 @@ public record AgentActionExecuteRequest(
         String userId,
         List<String> roles,
         Boolean force,
-        String comment
+        String comment,
+        String idempotencyKey,
+        Boolean simulateFailure
 ) {
 }

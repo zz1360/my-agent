@@ -49,12 +49,20 @@ class LogisticsAgentApplicationTests {
                 SELECT COUNT(*) FROM ai_rag_experiment
                 WHERE tenant_id = ?
                 """, Integer.class, "T001");
-        assertThat(migrations).isGreaterThanOrEqualTo(7);
+        assertThat(migrations).isGreaterThanOrEqualTo(8);
         assertThat(ragExperiments).isNotNull().isGreaterThanOrEqualTo(2);
         Integer actionDrafts = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_action_draft", Integer.class);
         assertThat(actionDrafts).isNotNull();
         Integer actionExecutions = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_action_execution", Integer.class);
         assertThat(actionExecutions).isNotNull();
+        Integer ticketNotes = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM logistics_ticket_note", Integer.class);
+        Integer opsTasks = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM logistics_ops_task", Integer.class);
+        Integer replyDrafts = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM logistics_customer_reply_draft", Integer.class);
+        Integer compensationReviews = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM logistics_compensation_review_task", Integer.class);
+        assertThat(ticketNotes).isNotNull();
+        assertThat(opsTasks).isNotNull();
+        assertThat(replyDrafts).isNotNull();
+        assertThat(compensationReviews).isNotNull();
     }
 
     @Test
@@ -302,11 +310,18 @@ class LogisticsAgentApplicationTests {
         assertThat(automation.get("skipped").asInt()).isGreaterThanOrEqualTo(1);
         assertThat(automation.get("executions")).anySatisfy(execution -> {
             assertThat(execution.get("actionId").asText()).isEqualTo(ticketActionId);
-            assertThat(execution.get("targetSystem").asText()).isEqualTo("SIMULATED_TICKET_SYSTEM");
+            assertThat(execution.get("targetSystem").asText()).isEqualTo("BUSINESS_TICKET_NOTE_TABLE");
+            assertThat(execution.get("externalRefId").asText()).startsWith("ticket-note-");
+            assertThat(execution.get("idempotencyKey").asText()).contains("auto-");
             assertThat(execution.get("lowRisk").asBoolean()).isTrue();
             assertThat(execution.get("status").asText()).isEqualTo("SUCCESS");
             assertThat(execution.get("responseJson").asText()).contains("ticketNoteDraftSaved");
         });
+        Integer noteRows = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM logistics_ticket_note
+                WHERE tenant_id = ? AND action_id = ?
+                """, Integer.class, "T001", ticketActionId);
+        assertThat(noteRows).isEqualTo(1);
 
         String appliedTicketBody = mockMvc.perform(get("/api/agent/actions/{actionId}", ticketActionId)
                         .param("tenantId", "T001")
@@ -356,9 +371,14 @@ class LogisticsAgentApplicationTests {
                 .getResponse()
                 .getContentAsString();
         JsonNode forcedExecution = objectMapper.readTree(forcedExecutionBody);
-        assertThat(forcedExecution.get("targetSystem").asText()).isEqualTo("SIMULATED_COMPENSATION_REVIEW_QUEUE");
+        assertThat(forcedExecution.get("targetSystem").asText()).isEqualTo("BUSINESS_COMPENSATION_REVIEW_TABLE");
         assertThat(forcedExecution.get("lowRisk").asBoolean()).isFalse();
         assertThat(forcedExecution.get("responseJson").asText()).contains("paymentCreated\":false", "manualAmountRequired");
+        Integer compensationRows = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM logistics_compensation_review_task
+                WHERE tenant_id = ? AND action_id = ?
+                """, Integer.class, "T001", compensationActionId);
+        assertThat(compensationRows).isEqualTo(1);
 
         String executionHistoryBody = mockMvc.perform(get("/api/agent/actions/{actionId}/executions", compensationActionId)
                         .param("tenantId", "T001")
@@ -370,6 +390,91 @@ class LogisticsAgentApplicationTests {
         JsonNode executionHistory = objectMapper.readTree(executionHistoryBody);
         assertThat(executionHistory).anySatisfy(execution ->
                 assertThat(execution.get("executionId").asText()).isEqualTo(forcedExecution.get("executionId").asText()));
+    }
+
+    @Test
+    void actionExecutionIsIdempotentAndFailedExecutionCanBeRetried() throws Exception {
+        JsonNode actions = generateActionDraftsForC001("conv-test-action-retry");
+        String opsActionId = firstActionId(actions, "OPERATIONS_FOLLOW_UP");
+        approveAction(opsActionId, "运营复盘任务可以创建。");
+
+        String failurePayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-retry",
+                  "roles": ["OPS_MANAGER"],
+                  "idempotencyKey": "ops-retry-key",
+                  "simulateFailure": true,
+                  "comment": "模拟外部任务中心失败"
+                }
+                """;
+        mockMvc.perform(post("/api/agent/actions/{actionId}/execute", opsActionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(failurePayload))
+                .andExpect(status().isBadRequest());
+
+        String failedExecutionId = jdbcTemplate.queryForObject("""
+                SELECT execution_id FROM ai_agent_action_execution
+                WHERE tenant_id = ? AND action_id = ? AND status = 'FAILED'
+                ORDER BY started_at DESC LIMIT 1
+                """, String.class, "T001", opsActionId);
+        assertThat(failedExecutionId).isNotBlank();
+        Integer retryableFailures = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM ai_agent_action_execution
+                WHERE tenant_id = ? AND execution_id = ? AND next_retry_at IS NOT NULL
+                """, Integer.class, "T001", failedExecutionId);
+        assertThat(retryableFailures).isEqualTo(1);
+
+        String retryPayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-retry",
+                  "roles": ["OPS_MANAGER"],
+                  "comment": "外部任务中心恢复后重试"
+                }
+                """;
+        String retryBody = mockMvc.perform(post("/api/agent/actions/executions/{executionId}/retry", failedExecutionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(retryPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode retryExecution = objectMapper.readTree(retryBody);
+        assertThat(retryExecution.get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(retryExecution.get("retryCount").asInt()).isEqualTo(1);
+        assertThat(retryExecution.get("targetSystem").asText()).isEqualTo("BUSINESS_OPS_TASK_TABLE");
+        assertThat(retryExecution.get("responseJson").asText()).contains("opsTaskCreated");
+
+        Integer opsTaskRows = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM logistics_ops_task
+                WHERE tenant_id = ? AND action_id = ?
+                """, Integer.class, "T001", opsActionId);
+        assertThat(opsTaskRows).isEqualTo(1);
+
+        String duplicatePayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-retry",
+                  "roles": ["OPS_MANAGER"],
+                  "idempotencyKey": "ops-retry-key",
+                  "comment": "重复点击执行按钮"
+                }
+                """;
+        String duplicateBody = mockMvc.perform(post("/api/agent/actions/{actionId}/execute", opsActionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(duplicatePayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode duplicateExecution = objectMapper.readTree(duplicateBody);
+        assertThat(duplicateExecution.get("executionId").asText()).isEqualTo(retryExecution.get("executionId").asText());
+        Integer opsTaskRowsAfterDuplicate = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM logistics_ops_task
+                WHERE tenant_id = ? AND action_id = ?
+                """, Integer.class, "T001", opsActionId);
+        assertThat(opsTaskRowsAfterDuplicate).isEqualTo(1);
     }
 
     @Test

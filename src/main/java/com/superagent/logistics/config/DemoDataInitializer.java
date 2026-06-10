@@ -63,6 +63,10 @@ public class DemoDataInitializer implements ApplicationRunner {
     }
 
     private void resetDemoData() {
+        jdbcTemplate.execute("DELETE FROM logistics_compensation_review_task");
+        jdbcTemplate.execute("DELETE FROM logistics_customer_reply_draft");
+        jdbcTemplate.execute("DELETE FROM logistics_ops_task");
+        jdbcTemplate.execute("DELETE FROM logistics_ticket_note");
         jdbcTemplate.execute("DELETE FROM ai_agent_action_execution");
         jdbcTemplate.execute("DELETE FROM ai_agent_action_draft");
         jdbcTemplate.execute("DELETE FROM ai_agent_tool_call");

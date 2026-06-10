@@ -76,6 +76,12 @@ public class AgentActionController {
         return executionService.listExecutions(actionId, tenantId, userId, roles);
     }
 
+    @PostMapping("/executions/{executionId}/retry")
+    public AgentActionExecutionResponse retryExecution(@PathVariable String executionId,
+                                                       @RequestBody AgentActionExecuteRequest request) {
+        return executionService.retry(executionId, request);
+    }
+
     @PostMapping("/automation/run")
     public AgentActionAutomationResponse runAutomation(@RequestBody AgentActionAutomationRequest request) {
         return executionService.runLowRiskAutomation(request);
