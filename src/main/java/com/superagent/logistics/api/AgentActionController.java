@@ -1,6 +1,11 @@
 package com.superagent.logistics.api;
 
 import com.superagent.logistics.action.AgentActionService;
+import com.superagent.logistics.action.AgentActionExecutionService;
+import com.superagent.logistics.api.dto.AgentActionAutomationRequest;
+import com.superagent.logistics.api.dto.AgentActionAutomationResponse;
+import com.superagent.logistics.api.dto.AgentActionExecuteRequest;
+import com.superagent.logistics.api.dto.AgentActionExecutionResponse;
 import com.superagent.logistics.api.dto.AgentActionGenerateRequest;
 import com.superagent.logistics.api.dto.AgentActionResponse;
 import com.superagent.logistics.api.dto.AgentActionReviewRequest;
@@ -20,9 +25,12 @@ import java.util.List;
 public class AgentActionController {
 
     private final AgentActionService actionService;
+    private final AgentActionExecutionService executionService;
 
-    public AgentActionController(AgentActionService actionService) {
+    public AgentActionController(AgentActionService actionService,
+                                 AgentActionExecutionService executionService) {
         this.actionService = actionService;
+        this.executionService = executionService;
     }
 
     @PostMapping("/from-diagnosis")
@@ -52,5 +60,24 @@ public class AgentActionController {
     public AgentActionResponse review(@PathVariable String actionId,
                                       @Valid @RequestBody AgentActionReviewRequest request) {
         return actionService.review(actionId, request);
+    }
+
+    @PostMapping("/{actionId}/execute")
+    public AgentActionExecutionResponse execute(@PathVariable String actionId,
+                                                @RequestBody AgentActionExecuteRequest request) {
+        return executionService.execute(actionId, request);
+    }
+
+    @GetMapping("/{actionId}/executions")
+    public List<AgentActionExecutionResponse> executions(@PathVariable String actionId,
+                                                         @RequestParam(required = false) String tenantId,
+                                                         @RequestParam(required = false) String userId,
+                                                         @RequestParam(required = false) List<String> roles) {
+        return executionService.listExecutions(actionId, tenantId, userId, roles);
+    }
+
+    @PostMapping("/automation/run")
+    public AgentActionAutomationResponse runAutomation(@RequestBody AgentActionAutomationRequest request) {
+        return executionService.runLowRiskAutomation(request);
     }
 }

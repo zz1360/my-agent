@@ -1,0 +1,22 @@
+package com.superagent.logistics.api.dto;
+
+import java.time.Instant;
+
+public record AgentActionExecutionResponse(
+        String tenantId,
+        String executionId,
+        String actionId,
+        String actionType,
+        String executorName,
+        String targetSystem,
+        boolean lowRisk,
+        String status,
+        String requestJson,
+        String responseJson,
+        String failureReason,
+        int retryCount,
+        String executedBy,
+        Instant startedAt,
+        Instant finishedAt
+) {
+}

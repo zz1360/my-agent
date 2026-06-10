@@ -49,10 +49,12 @@ class LogisticsAgentApplicationTests {
                 SELECT COUNT(*) FROM ai_rag_experiment
                 WHERE tenant_id = ?
                 """, Integer.class, "T001");
-        assertThat(migrations).isGreaterThanOrEqualTo(6);
+        assertThat(migrations).isGreaterThanOrEqualTo(7);
         assertThat(ragExperiments).isNotNull().isGreaterThanOrEqualTo(2);
         Integer actionDrafts = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_action_draft", Integer.class);
         assertThat(actionDrafts).isNotNull();
+        Integer actionExecutions = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_action_execution", Integer.class);
+        assertThat(actionExecutions).isNotNull();
     }
 
     @Test
@@ -267,6 +269,107 @@ class LogisticsAgentApplicationTests {
         JsonNode approvedActions = objectMapper.readTree(approvedBody);
         assertThat(approvedActions).anySatisfy(action ->
                 assertThat(action.get("actionId").asText()).isEqualTo(approvedActionId));
+    }
+
+    @Test
+    void approvedActionsCanBeExecutedWithLowRiskAutomationAndManualHighRiskGuard() throws Exception {
+        JsonNode actions = generateActionDraftsForC001("conv-test-action-execution");
+        String ticketActionId = firstActionId(actions, "TICKET_NOTE");
+        String compensationActionId = firstActionId(actions, "COMPENSATION_REVIEW");
+
+        approveAction(ticketActionId, "内部工单备注可以先保存为待发布草稿。");
+        approveAction(compensationActionId, "赔付复核只进入人工队列，不直接赔付。");
+
+        String automationPayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-automation",
+                  "roles": ["OPS_MANAGER"],
+                  "customerId": "C001",
+                  "limit": 10
+                }
+                """;
+        String automationBody = mockMvc.perform(post("/api/agent/actions/automation/run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(automationPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode automation = objectMapper.readTree(automationBody);
+        assertThat(automation.get("scanned").asInt()).isGreaterThanOrEqualTo(2);
+        assertThat(automation.get("executed").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(automation.get("skipped").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(automation.get("executions")).anySatisfy(execution -> {
+            assertThat(execution.get("actionId").asText()).isEqualTo(ticketActionId);
+            assertThat(execution.get("targetSystem").asText()).isEqualTo("SIMULATED_TICKET_SYSTEM");
+            assertThat(execution.get("lowRisk").asBoolean()).isTrue();
+            assertThat(execution.get("status").asText()).isEqualTo("SUCCESS");
+            assertThat(execution.get("responseJson").asText()).contains("ticketNoteDraftSaved");
+        });
+
+        String appliedTicketBody = mockMvc.perform(get("/api/agent/actions/{actionId}", ticketActionId)
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(appliedTicketBody).get("status").asText()).isEqualTo("APPLIED");
+
+        String stillApprovedCompensationBody = mockMvc.perform(get("/api/agent/actions/{actionId}", compensationActionId)
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(stillApprovedCompensationBody).get("status").asText()).isEqualTo("APPROVED");
+
+        String executeWithoutForce = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-automation",
+                  "roles": ["OPS_MANAGER"],
+                  "comment": "尝试直接执行高风险动作"
+                }
+                """;
+        mockMvc.perform(post("/api/agent/actions/{actionId}/execute", compensationActionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(executeWithoutForce))
+                .andExpect(status().isBadRequest());
+
+        String executeWithForce = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-automation",
+                  "roles": ["OPS_MANAGER"],
+                  "force": true,
+                  "comment": "人工确认只创建赔付复核队列，不直接赔付。"
+                }
+                """;
+        String forcedExecutionBody = mockMvc.perform(post("/api/agent/actions/{actionId}/execute", compensationActionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(executeWithForce))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode forcedExecution = objectMapper.readTree(forcedExecutionBody);
+        assertThat(forcedExecution.get("targetSystem").asText()).isEqualTo("SIMULATED_COMPENSATION_REVIEW_QUEUE");
+        assertThat(forcedExecution.get("lowRisk").asBoolean()).isFalse();
+        assertThat(forcedExecution.get("responseJson").asText()).contains("paymentCreated\":false", "manualAmountRequired");
+
+        String executionHistoryBody = mockMvc.perform(get("/api/agent/actions/{actionId}/executions", compensationActionId)
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode executionHistory = objectMapper.readTree(executionHistoryBody);
+        assertThat(executionHistory).anySatisfy(execution ->
+                assertThat(execution.get("executionId").asText()).isEqualTo(forcedExecution.get("executionId").asText()));
     }
 
     @Test
@@ -628,5 +731,77 @@ class LogisticsAgentApplicationTests {
             Thread.sleep(50);
         }
         throw new AssertionError("Index job did not finish: " + jobId);
+    }
+
+    private JsonNode generateActionDraftsForC001(String conversationId) throws Exception {
+        String diagnosisPayload = """
+                {
+                  "conversationId": "%s-diagnosis",
+                  "userId": "u-cs-test",
+                  "tenantId": "T001",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "customerId": "C001",
+                  "days": 30,
+                  "message": "请基于客户 C001 的异常诊断生成后续动作建议。",
+                  "returnCitations": true
+                }
+                """.formatted(conversationId);
+        String diagnosisBody = mockMvc.perform(post("/api/agent/customer-diagnosis")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(diagnosisPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String traceId = objectMapper.readTree(diagnosisBody).get("traceId").asText();
+
+        String generatePayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-cs-test",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "traceId": "%s",
+                  "conversationId": "%s-actions",
+                  "customerId": "C001",
+                  "days": 30
+                }
+                """.formatted(traceId, conversationId);
+        String actionBody = mockMvc.perform(post("/api/agent/actions/from-diagnosis")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(generatePayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        return objectMapper.readTree(actionBody);
+    }
+
+    private JsonNode approveAction(String actionId, String comment) throws Exception {
+        String reviewPayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-reviewer",
+                  "roles": ["OPS_MANAGER"],
+                  "status": "APPROVED",
+                  "comment": "%s"
+                }
+                """.formatted(comment);
+        String reviewedBody = mockMvc.perform(post("/api/agent/actions/{actionId}/review", actionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        return objectMapper.readTree(reviewedBody);
+    }
+
+    private String firstActionId(JsonNode actions, String actionType) {
+        for (JsonNode action : actions) {
+            if (actionType.equals(action.get("actionType").asText())) {
+                return action.get("actionId").asText();
+            }
+        }
+        throw new AssertionError("Missing action type: " + actionType);
     }
 }
