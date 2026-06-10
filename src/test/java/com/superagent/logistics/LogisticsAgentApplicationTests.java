@@ -10,6 +10,8 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.charset.StandardCharsets;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -27,6 +29,22 @@ class LogisticsAgentApplicationTests {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Test
+    void actionAdminConsoleStaticPageLoads() throws Exception {
+        String body = mockMvc.perform(get("/admin/actions.html"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(body)
+                .contains("物流 Agent 管理台")
+                .contains("执行指标")
+                .contains("失败重试队列")
+                .contains("业务回链")
+                .contains("/api/agent/actions/executions/metrics");
+    }
 
     @Test
     void flywayMigratesSchemaAndSeedsEvalCases() {
