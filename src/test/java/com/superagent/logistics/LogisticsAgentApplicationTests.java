@@ -49,8 +49,10 @@ class LogisticsAgentApplicationTests {
                 SELECT COUNT(*) FROM ai_rag_experiment
                 WHERE tenant_id = ?
                 """, Integer.class, "T001");
-        assertThat(migrations).isGreaterThanOrEqualTo(5);
+        assertThat(migrations).isGreaterThanOrEqualTo(6);
         assertThat(ragExperiments).isNotNull().isGreaterThanOrEqualTo(2);
+        Integer actionDrafts = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_action_draft", Integer.class);
+        assertThat(actionDrafts).isNotNull();
     }
 
     @Test
@@ -162,6 +164,109 @@ class LogisticsAgentApplicationTests {
         JsonNode auditRows = objectMapper.readTree(auditBody);
         assertThat(auditRows).anySatisfy(row ->
                 assertThat(row.get("traceId").asText()).isEqualTo(traceId));
+    }
+
+    @Test
+    void diagnosisCanGenerateReviewAndListHumanApprovedActionDrafts() throws Exception {
+        String diagnosisPayload = """
+                {
+                  "conversationId": "conv-test-action-diagnosis",
+                  "userId": "u-cs-test",
+                  "tenantId": "T001",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "customerId": "C001",
+                  "days": 30,
+                  "message": "请基于客户 C001 的异常诊断生成后续动作建议。",
+                  "returnCitations": true
+                }
+                """;
+
+        String diagnosisBody = mockMvc.perform(post("/api/agent/customer-diagnosis")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(diagnosisPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String traceId = objectMapper.readTree(diagnosisBody).get("traceId").asText();
+
+        String generatePayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-cs-test",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "traceId": "%s",
+                  "conversationId": "conv-test-actions",
+                  "customerId": "C001",
+                  "days": 30
+                }
+                """.formatted(traceId);
+        String actionBody = mockMvc.perform(post("/api/agent/actions/from-diagnosis")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(generatePayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode actions = objectMapper.readTree(actionBody);
+        assertThat(actions).hasSizeGreaterThanOrEqualTo(3);
+        assertThat(actions).allSatisfy(action -> {
+            assertThat(action.get("status").asText()).isEqualTo("PENDING_REVIEW");
+            assertThat(action.get("customerId").asText()).isEqualTo("C001");
+            assertThat(action.get("evidenceJson").asText()).contains("diagnosis", "sampleWaybills");
+        });
+        assertThat(actions).anySatisfy(action ->
+                assertThat(action.get("actionType").asText()).isEqualTo("CUSTOMER_REPLY"));
+        assertThat(actions).anySatisfy(action ->
+                assertThat(action.get("actionType").asText()).isEqualTo("TICKET_NOTE"));
+        assertThat(actions).anySatisfy(action ->
+                assertThat(action.get("actionType").asText()).isEqualTo("COMPENSATION_REVIEW"));
+
+        String compensationActionId = null;
+        for (JsonNode action : actions) {
+            if ("COMPENSATION_REVIEW".equals(action.get("actionType").asText())) {
+                compensationActionId = action.get("actionId").asText();
+                assertThat(action.get("draftContent").asText()).contains("人工复核", "SLA/补偿争议");
+                break;
+            }
+        }
+        assertThat(compensationActionId).isNotBlank();
+        String approvedActionId = compensationActionId;
+
+        String reviewPayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-reviewer",
+                  "roles": ["OPS_MANAGER"],
+                  "status": "APPROVED",
+                  "comment": "证据完整，进入人工赔付核算。"
+                }
+                """;
+        String reviewedBody = mockMvc.perform(post("/api/agent/actions/{actionId}/review", compensationActionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode reviewed = objectMapper.readTree(reviewedBody);
+        assertThat(reviewed.get("status").asText()).isEqualTo("APPROVED");
+        assertThat(reviewed.get("reviewerId").asText()).isEqualTo("u-ops-reviewer");
+        assertThat(reviewed.get("reviewComment").asText()).contains("证据完整");
+
+        String approvedBody = mockMvc.perform(get("/api/agent/actions")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("customerId", "C001")
+                        .param("status", "APPROVED")
+                        .param("limit", "10"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode approvedActions = objectMapper.readTree(approvedBody);
+        assertThat(approvedActions).anySatisfy(action ->
+                assertThat(action.get("actionId").asText()).isEqualTo(approvedActionId));
     }
 
     @Test
