@@ -4,7 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.superagent.logistics.api.dto.AgentActionAutomationRequest;
 import com.superagent.logistics.api.dto.AgentActionAutomationResponse;
+import com.superagent.logistics.api.dto.AgentActionBusinessLinkResponse;
 import com.superagent.logistics.api.dto.AgentActionExecuteRequest;
+import com.superagent.logistics.api.dto.AgentActionExecutionMetricRow;
+import com.superagent.logistics.api.dto.AgentActionExecutionMetricsResponse;
 import com.superagent.logistics.api.dto.AgentActionExecutionResponse;
 import com.superagent.logistics.api.dto.AgentActionResponse;
 import com.superagent.logistics.security.AccessDeniedException;
@@ -18,7 +21,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -149,6 +154,96 @@ public class AgentActionExecutionService {
                 """, this::mapExecution, context.tenantId(), actionId);
     }
 
+    public List<AgentActionExecutionResponse> searchExecutions(String tenantId,
+                                                               String userId,
+                                                               List<String> roles,
+                                                               String status,
+                                                               String actionType,
+                                                               String executorName,
+                                                               String targetSystem,
+                                                               LocalDate from,
+                                                               LocalDate to,
+                                                               int limit) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        checkExecutorPermission(context);
+        return queryExecutions(context.tenantId(), status, actionType, executorName, targetSystem,
+                from, to, Math.max(1, Math.min(limit, 200)));
+    }
+
+    public List<AgentActionExecutionResponse> retryQueue(String tenantId,
+                                                         String userId,
+                                                         List<String> roles,
+                                                         boolean dueOnly,
+                                                         int limit) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        checkExecutorPermission(context);
+        StringBuilder sql = new StringBuilder("""
+                SELECT * FROM ai_agent_action_execution
+                WHERE tenant_id = ? AND status = 'FAILED' AND next_retry_at IS NOT NULL
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(context.tenantId());
+        if (dueOnly) {
+            sql.append(" AND next_retry_at <= ?");
+            args.add(Timestamp.from(Instant.now()));
+        }
+        sql.append(" ORDER BY next_retry_at ASC, started_at ASC LIMIT ?");
+        args.add(Math.max(1, Math.min(limit, 200)));
+        return jdbcTemplate.query(sql.toString(), this::mapExecution, args.toArray());
+    }
+
+    public AgentActionExecutionMetricsResponse metrics(String tenantId,
+                                                       String userId,
+                                                       List<String> roles,
+                                                       LocalDate from,
+                                                       LocalDate to) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        checkExecutorPermission(context);
+        List<AgentActionExecutionResponse> rows = queryExecutions(context.tenantId(), null, null, null,
+                null, from, to, 5000);
+        long total = rows.size();
+        long success = rows.stream().filter(row -> "SUCCESS".equals(row.status())).count();
+        long failed = rows.stream().filter(row -> "FAILED".equals(row.status())).count();
+        long retryableFailed = rows.stream()
+                .filter(row -> "FAILED".equals(row.status()) && row.nextRetryAt() != null
+                        && row.retryCount() < row.maxRetryCount())
+                .count();
+        return new AgentActionExecutionMetricsResponse(
+                context.tenantId(),
+                from,
+                to,
+                total,
+                success,
+                failed,
+                retryableFailed,
+                rate(success, total),
+                rate(failed, total),
+                metricRows(rows, AgentActionExecutionResponse::actionType),
+                metricRows(rows, AgentActionExecutionResponse::executorName),
+                metricRows(rows, AgentActionExecutionResponse::targetSystem)
+        );
+    }
+
+    public AgentActionBusinessLinkResponse businessLink(String actionId,
+                                                        String tenantId,
+                                                        String userId,
+                                                        List<String> roles) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        checkExecutorPermission(context);
+        AgentActionResponse action = actionService.get(context.tenantId(), context.userId(), List.copyOf(context.roles()), actionId);
+        Optional<AgentActionExecutionResponse> latestExecution = latestSuccessfulExecution(context.tenantId(), action.actionId());
+        return switch (action.actionType()) {
+            case "TICKET_NOTE" -> ticketNoteLink(action, latestExecution);
+            case "OPERATIONS_FOLLOW_UP" -> opsTaskLink(action, latestExecution);
+            case "CUSTOMER_REPLY" -> replyDraftLink(action, latestExecution);
+            case "COMPENSATION_REVIEW" -> compensationReviewLink(action, latestExecution);
+            default -> new AgentActionBusinessLinkResponse(
+                    action.tenantId(), action.actionId(), action.actionType(), null, null,
+                    action.customerId(), action.waybillId(), action.status(), null,
+                    action.traceId(), latestExecution.map(AgentActionExecutionResponse::executionId).orElse(null));
+        };
+    }
+
     private AgentActionExecutionResponse executeWithExecutor(AgentUserContext context,
                                                              AgentActionResponse action,
                                                              AgentActionExecutor executor,
@@ -179,6 +274,49 @@ public class AgentActionExecutionService {
                     nextRetryAt, startedAt, finishedAt);
             throw ex;
         }
+    }
+
+    private List<AgentActionExecutionResponse> queryExecutions(String tenantId,
+                                                               String status,
+                                                               String actionType,
+                                                               String executorName,
+                                                               String targetSystem,
+                                                               LocalDate from,
+                                                               LocalDate to,
+                                                               int limit) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT * FROM ai_agent_action_execution
+                WHERE tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        if (status != null && !status.isBlank()) {
+            sql.append(" AND status = ?");
+            args.add(status.trim().toUpperCase());
+        }
+        if (actionType != null && !actionType.isBlank()) {
+            sql.append(" AND action_type = ?");
+            args.add(actionType.trim().toUpperCase());
+        }
+        if (executorName != null && !executorName.isBlank()) {
+            sql.append(" AND executor_name = ?");
+            args.add(executorName.trim());
+        }
+        if (targetSystem != null && !targetSystem.isBlank()) {
+            sql.append(" AND target_system = ?");
+            args.add(targetSystem.trim());
+        }
+        if (from != null) {
+            sql.append(" AND started_at >= ?");
+            args.add(Timestamp.valueOf(from.atStartOfDay()));
+        }
+        if (to != null) {
+            sql.append(" AND started_at < ?");
+            args.add(Timestamp.valueOf(to.plusDays(1).atStartOfDay()));
+        }
+        sql.append(" ORDER BY started_at DESC LIMIT ?");
+        args.add(limit);
+        return jdbcTemplate.query(sql.toString(), this::mapExecution, args.toArray());
     }
 
     private void insertExecution(AgentUserContext context,
@@ -226,6 +364,15 @@ public class AgentActionExecutionService {
                 .orElseThrow();
     }
 
+    private Optional<AgentActionExecutionResponse> latestSuccessfulExecution(String tenantId, String actionId) {
+        return jdbcTemplate.query("""
+                SELECT * FROM ai_agent_action_execution
+                WHERE tenant_id = ? AND action_id = ? AND status = 'SUCCESS'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """, this::mapExecution, tenantId, actionId).stream().findFirst();
+    }
+
     private AgentActionExecutor findExecutor(String actionType) {
         AgentActionExecutor executor = executors.get(actionType);
         if (executor == null) {
@@ -262,6 +409,112 @@ public class AgentActionExecutionService {
                 ORDER BY started_at DESC
                 LIMIT 1
                 """, this::mapExecution, tenantId, action.actionId()).stream().findFirst();
+    }
+
+    private List<AgentActionExecutionMetricRow> metricRows(List<AgentActionExecutionResponse> rows,
+                                                           Function<AgentActionExecutionResponse, String> classifier) {
+        return rows.stream()
+                .collect(Collectors.groupingBy(row -> {
+                    String name = classifier.apply(row);
+                    return name == null || name.isBlank() ? "UNKNOWN" : name;
+                }))
+                .entrySet().stream()
+                .map(entry -> {
+                    long total = entry.getValue().size();
+                    long success = entry.getValue().stream().filter(row -> "SUCCESS".equals(row.status())).count();
+                    long failed = entry.getValue().stream().filter(row -> "FAILED".equals(row.status())).count();
+                    return new AgentActionExecutionMetricRow(entry.getKey(), total, success, failed, rate(success, total));
+                })
+                .sorted(Comparator.comparingLong(AgentActionExecutionMetricRow::total).reversed()
+                        .thenComparing(AgentActionExecutionMetricRow::name))
+                .toList();
+    }
+
+    private double rate(long numerator, long denominator) {
+        if (denominator == 0) {
+            return 0;
+        }
+        return Math.round(numerator * 1000.0 / denominator) / 10.0;
+    }
+
+    private AgentActionBusinessLinkResponse ticketNoteLink(AgentActionResponse action,
+                                                           Optional<AgentActionExecutionResponse> latestExecution) {
+        return jdbcTemplate.query("""
+                SELECT note_id AS business_id, customer_id, waybill_id, status, created_at
+                FROM logistics_ticket_note
+                WHERE tenant_id = ? AND action_id = ?
+                LIMIT 1
+                """, rs -> rs.next() ? businessLink(action, "logistics_ticket_note", rs, latestExecution) : emptyBusinessLink(action, latestExecution),
+                action.tenantId(), action.actionId());
+    }
+
+    private AgentActionBusinessLinkResponse opsTaskLink(AgentActionResponse action,
+                                                        Optional<AgentActionExecutionResponse> latestExecution) {
+        return jdbcTemplate.query("""
+                SELECT task_id AS business_id, customer_id, NULL AS waybill_id, status, created_at
+                FROM logistics_ops_task
+                WHERE tenant_id = ? AND action_id = ?
+                LIMIT 1
+                """, rs -> rs.next() ? businessLink(action, "logistics_ops_task", rs, latestExecution) : emptyBusinessLink(action, latestExecution),
+                action.tenantId(), action.actionId());
+    }
+
+    private AgentActionBusinessLinkResponse replyDraftLink(AgentActionResponse action,
+                                                           Optional<AgentActionExecutionResponse> latestExecution) {
+        return jdbcTemplate.query("""
+                SELECT reply_id AS business_id, customer_id, NULL AS waybill_id, status, created_at
+                FROM logistics_customer_reply_draft
+                WHERE tenant_id = ? AND action_id = ?
+                LIMIT 1
+                """, rs -> rs.next() ? businessLink(action, "logistics_customer_reply_draft", rs, latestExecution) : emptyBusinessLink(action, latestExecution),
+                action.tenantId(), action.actionId());
+    }
+
+    private AgentActionBusinessLinkResponse compensationReviewLink(AgentActionResponse action,
+                                                                   Optional<AgentActionExecutionResponse> latestExecution) {
+        return jdbcTemplate.query("""
+                SELECT review_id AS business_id, customer_id, waybill_id, status, created_at
+                FROM logistics_compensation_review_task
+                WHERE tenant_id = ? AND action_id = ?
+                LIMIT 1
+                """, rs -> rs.next() ? businessLink(action, "logistics_compensation_review_task", rs, latestExecution) : emptyBusinessLink(action, latestExecution),
+                action.tenantId(), action.actionId());
+    }
+
+    private AgentActionBusinessLinkResponse businessLink(AgentActionResponse action,
+                                                         String tableName,
+                                                         ResultSet rs,
+                                                         Optional<AgentActionExecutionResponse> latestExecution) throws SQLException {
+        return new AgentActionBusinessLinkResponse(
+                action.tenantId(),
+                action.actionId(),
+                action.actionType(),
+                tableName,
+                rs.getString("business_id"),
+                rs.getString("customer_id"),
+                rs.getString("waybill_id"),
+                rs.getString("status"),
+                toInstant(rs.getTimestamp("created_at")),
+                action.traceId(),
+                latestExecution.map(AgentActionExecutionResponse::executionId).orElse(null)
+        );
+    }
+
+    private AgentActionBusinessLinkResponse emptyBusinessLink(AgentActionResponse action,
+                                                              Optional<AgentActionExecutionResponse> latestExecution) {
+        return new AgentActionBusinessLinkResponse(
+                action.tenantId(),
+                action.actionId(),
+                action.actionType(),
+                null,
+                null,
+                action.customerId(),
+                action.waybillId(),
+                action.status(),
+                null,
+                action.traceId(),
+                latestExecution.map(AgentActionExecutionResponse::executionId).orElse(null)
+        );
     }
 
     private void checkExecutorPermission(AgentUserContext context) {

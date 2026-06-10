@@ -425,6 +425,19 @@ class LogisticsAgentApplicationTests {
                 """, Integer.class, "T001", failedExecutionId);
         assertThat(retryableFailures).isEqualTo(1);
 
+        String retryQueueBody = mockMvc.perform(get("/api/agent/actions/executions/retry-queue")
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER")
+                        .param("dueOnly", "false")
+                        .param("limit", "20"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode retryQueue = objectMapper.readTree(retryQueueBody);
+        assertThat(retryQueue).anySatisfy(execution ->
+                assertThat(execution.get("executionId").asText()).isEqualTo(failedExecutionId));
+
         String retryPayload = """
                 {
                   "tenantId": "T001",
@@ -446,11 +459,53 @@ class LogisticsAgentApplicationTests {
         assertThat(retryExecution.get("targetSystem").asText()).isEqualTo("BUSINESS_OPS_TASK_TABLE");
         assertThat(retryExecution.get("responseJson").asText()).contains("opsTaskCreated");
 
+        String searchBody = mockMvc.perform(get("/api/agent/actions/executions")
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER")
+                        .param("status", "SUCCESS")
+                        .param("actionType", "OPERATIONS_FOLLOW_UP")
+                        .param("targetSystem", "BUSINESS_OPS_TASK_TABLE")
+                        .param("limit", "20"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode searchResults = objectMapper.readTree(searchBody);
+        assertThat(searchResults).anySatisfy(execution ->
+                assertThat(execution.get("executionId").asText()).isEqualTo(retryExecution.get("executionId").asText()));
+
+        String metricsBody = mockMvc.perform(get("/api/agent/actions/executions/metrics")
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode metrics = objectMapper.readTree(metricsBody);
+        assertThat(metrics.get("totalExecutions").asLong()).isGreaterThanOrEqualTo(2);
+        assertThat(metrics.get("successCount").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(metrics.get("failedCount").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(metrics.get("retryableFailedCount").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(metrics.get("byActionType")).anySatisfy(row ->
+                assertThat(row.get("name").asText()).isEqualTo("OPERATIONS_FOLLOW_UP"));
+
         Integer opsTaskRows = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM logistics_ops_task
                 WHERE tenant_id = ? AND action_id = ?
                 """, Integer.class, "T001", opsActionId);
         assertThat(opsTaskRows).isEqualTo(1);
+
+        String businessLinkBody = mockMvc.perform(get("/api/agent/actions/{actionId}/business-link", opsActionId)
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode businessLink = objectMapper.readTree(businessLinkBody);
+        assertThat(businessLink.get("businessTable").asText()).isEqualTo("logistics_ops_task");
+        assertThat(businessLink.get("businessId").asText()).startsWith("ops-task-");
+        assertThat(businessLink.get("latestExecutionId").asText()).isEqualTo(retryExecution.get("executionId").asText());
 
         String duplicatePayload = """
                 {
