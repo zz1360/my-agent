@@ -220,6 +220,125 @@ class LogisticsAgentApplicationTests {
     }
 
     @Test
+    void knowledgeDocumentSupportsPreviewDraftPublishExpireAndIndexJobs() throws Exception {
+        String payload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-ops-test",
+                  "roles": ["OPS_MANAGER"],
+                  "baseDocId": "sop-return-appointment-test",
+                  "docId": "sop-return-appointment-test-v1",
+                  "title": "逆向取件预约 SOP 测试版",
+                  "docType": "manual",
+                  "bizDomain": "reverse_logistics",
+                  "version": "v1-test",
+                  "status": "DRAFT",
+                  "aclRoles": ["CUSTOMER_SERVICE", "OPERATIONS", "OPS_MANAGER"],
+                  "content": "逆向取件预约需要先确认客户退货地址、可取件时间和包裹数量。\\n\\n若骑手两次联系失败，客服应生成二次预约任务，并记录失败原因。"
+                }
+                """;
+
+        String previewBody = mockMvc.perform(post("/api/knowledge/documents/preview")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode preview = objectMapper.readTree(previewBody);
+        assertThat(preview.get("baseDocId").asText()).isEqualTo("sop-return-appointment-test");
+        assertThat(preview.get("chunkCount").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(preview.get("chunks").get(0).get("metadata").asText()).contains("baseDocId=sop-return-appointment-test");
+
+        String draftBody = mockMvc.perform(post("/api/knowledge/documents")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode draft = objectMapper.readTree(draftBody);
+        assertThat(draft.get("status").asText()).isEqualTo("DRAFT");
+        assertThat(draft.get("baseDocId").asText()).isEqualTo("sop-return-appointment-test");
+        assertThat(draft.get("indexJobId").asText()).startsWith("kb-index-");
+
+        String draftSearchBody = mockMvc.perform(get("/api/knowledge/search")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("query", "逆向取件预约")
+                        .param("topK", "5"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode draftSearch = objectMapper.readTree(draftSearchBody);
+        assertThat(draftSearch).noneSatisfy(row ->
+                assertThat(row.get("docId").asText()).isEqualTo("sop-return-appointment-test-v1"));
+
+        String publishBody = mockMvc.perform(post("/api/knowledge/documents/{docId}/publish", "sop-return-appointment-test-v1")
+                        .param("tenantId", "T001")
+                        .param("userId", "u-ops-test")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode published = objectMapper.readTree(publishBody);
+        assertThat(published.get("status").asText()).isEqualTo("ACTIVE");
+        assertThat(published.get("publishedAt").asText()).isNotBlank();
+        String jobId = published.get("indexJobId").asText();
+        JsonNode job = awaitIndexJob(jobId);
+        assertThat(job.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(job.get("triggerType").asText()).isEqualTo("DOCUMENT_PUBLISH");
+        assertThat(job.get("chunkCount").asInt()).isGreaterThanOrEqualTo(1);
+
+        String listBody = mockMvc.perform(get("/api/knowledge/documents")
+                        .param("tenantId", "T001")
+                        .param("roles", "OPS_MANAGER")
+                        .param("baseDocId", "sop-return-appointment-test")
+                        .param("limit", "10"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode docs = objectMapper.readTree(listBody);
+        assertThat(docs).anySatisfy(row ->
+                assertThat(row.get("docId").asText()).isEqualTo("sop-return-appointment-test-v1"));
+
+        String activeSearchBody = mockMvc.perform(get("/api/knowledge/search")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("query", "逆向取件预约")
+                        .param("topK", "5"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode activeSearch = objectMapper.readTree(activeSearchBody);
+        assertThat(activeSearch).anySatisfy(row ->
+                assertThat(row.get("docId").asText()).isEqualTo("sop-return-appointment-test-v1"));
+
+        mockMvc.perform(post("/api/knowledge/documents/{docId}/expire", "sop-return-appointment-test-v1")
+                        .param("tenantId", "T001")
+                        .param("userId", "u-ops-test")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk());
+
+        String expiredSearchBody = mockMvc.perform(get("/api/knowledge/search")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("query", "逆向取件预约")
+                        .param("topK", "5"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode expiredSearch = objectMapper.readTree(expiredSearchBody);
+        assertThat(expiredSearch).noneSatisfy(row ->
+                assertThat(row.get("docId").asText()).isEqualTo("sop-return-appointment-test-v1"));
+    }
+
+    @Test
     void hybridSearchRanksColdChainPolicyForTemperatureQuery() throws Exception {
         String body = mockMvc.perform(get("/api/knowledge/search")
                         .param("tenantId", "T001")
@@ -302,5 +421,24 @@ class LogisticsAgentApplicationTests {
                 .getContentAsString();
         JsonNode found = objectMapper.readTree(foundBody);
         assertThat(found.get("runId").asText()).isEqualTo(runId);
+    }
+
+    private JsonNode awaitIndexJob(String jobId) throws Exception {
+        for (int i = 0; i < 20; i++) {
+            String body = mockMvc.perform(get("/api/knowledge/index-jobs/{jobId}", jobId)
+                            .param("tenantId", "T001")
+                            .param("userId", "u-ops-test")
+                            .param("roles", "OPS_MANAGER"))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+            JsonNode job = objectMapper.readTree(body);
+            if ("COMPLETED".equals(job.get("status").asText()) || "FAILED".equals(job.get("status").asText())) {
+                return job;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("Index job did not finish: " + jobId);
     }
 }

@@ -68,6 +68,7 @@ public class DemoDataInitializer implements ApplicationRunner {
         jdbcTemplate.execute("DELETE FROM ai_eval_case_result");
         jdbcTemplate.execute("DELETE FROM ai_eval_run");
         jdbcTemplate.execute("DELETE FROM ai_eval_case");
+        jdbcTemplate.execute("DELETE FROM ai_knowledge_index_job");
         jdbcTemplate.execute("DELETE FROM ai_knowledge_chunk");
         jdbcTemplate.execute("DELETE FROM ai_knowledge_document");
         jdbcTemplate.execute("DELETE FROM logistics_ticket");
@@ -413,12 +414,13 @@ public class DemoDataInitializer implements ApplicationRunner {
         for (KnowledgeSeed seed : seeds) {
             jdbcTemplate.update("""
                     INSERT INTO ai_knowledge_document
-                    (tenant_id, doc_id, title, doc_type, biz_domain, version, source_url, acl_roles,
-                     effective_from, effective_to, status, content, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, "T001", seed.docId(), seed.title(), seed.docType(), seed.bizDomain(), seed.version(),
+                    (tenant_id, doc_id, base_doc_id, title, doc_type, biz_domain, version, source_url, acl_roles,
+                     effective_from, effective_to, status, content, published_at, indexed_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, "T001", seed.docId(), seed.docId(), seed.title(), seed.docType(), seed.bizDomain(), seed.version(),
                     "kb://logistics/" + seed.docId(), seed.aclRoles(), Date.valueOf(seedDate.minusYears(1)), null,
-                    "ACTIVE", seed.content(), Timestamp.valueOf(seedDate.atStartOfDay()), Timestamp.valueOf(seedDate.atStartOfDay()));
+                    "ACTIVE", seed.content(), Timestamp.valueOf(seedDate.atStartOfDay()), null,
+                    Timestamp.valueOf(seedDate.atStartOfDay()), Timestamp.valueOf(seedDate.atStartOfDay()));
 
             jdbcTemplate.update("""
                     INSERT INTO ai_knowledge_chunk
@@ -432,10 +434,15 @@ public class DemoDataInitializer implements ApplicationRunner {
 
     private void syncKnowledgeVectors() {
         List<KnowledgeChunk> chunks = jdbcTemplate.query("""
-                SELECT doc_id, chunk_id, title_path, content, metadata, acl_roles
-                FROM ai_knowledge_chunk
-                WHERE tenant_id = ?
-                ORDER BY id
+                SELECT c.doc_id, c.chunk_id, c.title_path, c.content, c.metadata, c.acl_roles
+                FROM ai_knowledge_chunk c
+                JOIN ai_knowledge_document d
+                  ON d.tenant_id = c.tenant_id AND d.doc_id = c.doc_id
+                WHERE c.tenant_id = ?
+                  AND d.status = 'ACTIVE'
+                  AND (d.effective_from IS NULL OR d.effective_from <= CURRENT_DATE)
+                  AND (d.effective_to IS NULL OR d.effective_to >= CURRENT_DATE)
+                ORDER BY c.id
                 """, (rs, rowNum) -> new KnowledgeChunk(
                 rs.getString("doc_id"),
                 rs.getString("chunk_id"),

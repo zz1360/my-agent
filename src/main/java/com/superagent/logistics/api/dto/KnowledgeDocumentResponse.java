@@ -7,6 +7,7 @@ import java.util.List;
 public record KnowledgeDocumentResponse(
         String tenantId,
         String docId,
+        String baseDocId,
         String title,
         String docType,
         String bizDomain,
@@ -19,6 +20,9 @@ public record KnowledgeDocumentResponse(
         String content,
         int chunkCount,
         List<KnowledgeChunkResponse> chunks,
+        String indexJobId,
+        Instant publishedAt,
+        Instant indexedAt,
         Instant createdAt,
         Instant updatedAt
 ) {

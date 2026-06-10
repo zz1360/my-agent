@@ -1,8 +1,10 @@
 package com.superagent.logistics.api;
 
 import com.superagent.logistics.api.dto.Citation;
+import com.superagent.logistics.api.dto.KnowledgeIndexJobResponse;
 import com.superagent.logistics.api.dto.KnowledgeDocumentRequest;
 import com.superagent.logistics.api.dto.KnowledgeDocumentResponse;
+import com.superagent.logistics.api.dto.KnowledgePreviewResponse;
 import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
 import com.superagent.logistics.knowledge.KnowledgeAdminService;
 import jakarta.validation.Valid;
@@ -31,14 +33,20 @@ public class KnowledgeAdminController {
         return knowledgeAdminService.upsert(request);
     }
 
+    @PostMapping("/documents/preview")
+    public KnowledgePreviewResponse preview(@Valid @RequestBody KnowledgeDocumentRequest request) {
+        return knowledgeAdminService.preview(request);
+    }
+
     @GetMapping("/documents")
     public List<KnowledgeDocumentResponse> list(@RequestParam(required = false) String tenantId,
                                                 @RequestParam(required = false) String userId,
                                                 @RequestParam(required = false) List<String> roles,
                                                 @RequestParam(required = false) String status,
                                                 @RequestParam(required = false) String bizDomain,
+                                                @RequestParam(required = false) String baseDocId,
                                                 @RequestParam(defaultValue = "50") int limit) {
-        return knowledgeAdminService.list(tenantId, userId, roles, status, bizDomain, limit);
+        return knowledgeAdminService.list(tenantId, userId, roles, status, bizDomain, baseDocId, limit);
     }
 
     @GetMapping("/documents/{docId}")
@@ -57,11 +65,43 @@ public class KnowledgeAdminController {
         return knowledgeAdminService.disable(tenantId, docId, userId, roles);
     }
 
+    @PostMapping("/documents/{docId}/publish")
+    public KnowledgeDocumentResponse publish(@PathVariable String docId,
+                                             @RequestParam(required = false) String tenantId,
+                                             @RequestParam(required = false) String userId,
+                                             @RequestParam(required = false) List<String> roles) {
+        return knowledgeAdminService.publish(tenantId, docId, userId, roles);
+    }
+
+    @PostMapping("/documents/{docId}/expire")
+    public KnowledgeDocumentResponse expire(@PathVariable String docId,
+                                            @RequestParam(required = false) String tenantId,
+                                            @RequestParam(required = false) String userId,
+                                            @RequestParam(required = false) List<String> roles) {
+        return knowledgeAdminService.expire(tenantId, docId, userId, roles);
+    }
+
     @PostMapping("/reindex")
     public KnowledgeReindexResponse reindex(@RequestParam(required = false) String tenantId,
                                             @RequestParam(required = false) String userId,
                                             @RequestParam(required = false) List<String> roles) {
         return knowledgeAdminService.reindex(tenantId, userId, roles);
+    }
+
+    @GetMapping("/index-jobs")
+    public List<KnowledgeIndexJobResponse> listIndexJobs(@RequestParam(required = false) String tenantId,
+                                                         @RequestParam(required = false) String userId,
+                                                         @RequestParam(required = false) List<String> roles,
+                                                         @RequestParam(defaultValue = "20") int limit) {
+        return knowledgeAdminService.listIndexJobs(tenantId, userId, roles, limit);
+    }
+
+    @GetMapping("/index-jobs/{jobId}")
+    public KnowledgeIndexJobResponse getIndexJob(@PathVariable String jobId,
+                                                 @RequestParam(required = false) String tenantId,
+                                                 @RequestParam(required = false) String userId,
+                                                 @RequestParam(required = false) List<String> roles) {
+        return knowledgeAdminService.getIndexJob(tenantId, userId, roles, jobId);
     }
 
     @GetMapping("/search")

@@ -91,6 +91,8 @@ public class KnowledgeSearchService {
                 JOIN ai_knowledge_document d
                   ON d.tenant_id = c.tenant_id AND d.doc_id = c.doc_id
                 WHERE c.tenant_id = ? AND d.status = 'ACTIVE'
+                  AND (d.effective_from IS NULL OR d.effective_from <= CURRENT_DATE)
+                  AND (d.effective_to IS NULL OR d.effective_to >= CURRENT_DATE)
                 """, this::mapChunk, tenantId);
     }
 
