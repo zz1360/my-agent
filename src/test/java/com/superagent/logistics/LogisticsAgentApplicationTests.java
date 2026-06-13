@@ -44,8 +44,12 @@ class LogisticsAgentApplicationTests {
                 .contains("物流 Agent 管理台")
                 .contains("执行指标")
                 .contains("失败重试队列")
+                .contains("反馈样本池")
+                .contains("评测候选")
                 .contains("业务回链")
-                .contains("/api/agent/actions/executions/metrics");
+                .contains("/api/agent/actions/executions/metrics")
+                .contains("/api/agent/feedback")
+                .contains("/api/agent/eval-candidates");
     }
 
     @Test
@@ -64,6 +68,8 @@ class LogisticsAgentApplicationTests {
                 .contains("/api/agent/chat/stream")
                 .contains("/api/agent/conversations")
                 .contains("data-feedback")
+                .contains("data-generate-actions")
+                .contains("/api/agent/actions/from-diagnosis")
                 .contains("/api/demo/questions");
     }
 
@@ -109,6 +115,9 @@ class LogisticsAgentApplicationTests {
         assertThat(conversations).isNotNull();
         assertThat(messages).isNotNull();
         assertThat(feedback).isNotNull();
+        assertThat(migrations).isGreaterThanOrEqualTo(10);
+        Integer candidates = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_case_candidate", Integer.class);
+        assertThat(candidates).isNotNull();
     }
 
     @Test
@@ -213,6 +222,139 @@ class LogisticsAgentApplicationTests {
         JsonNode feedback = objectMapper.readTree(feedbackBody);
         assertThat(feedback.get("feedbackId").asText()).startsWith("fb-");
         assertThat(feedback.get("rating").asText()).isEqualTo("HELPFUL");
+    }
+
+    @Test
+    void notHelpfulFeedbackCanBecomeEvalCandidateRagExperimentAndEvalCase() throws Exception {
+        String conversationId = "conv-test-feedback-loop";
+        String payload = """
+                {
+                  "conversationId": "%s",
+                  "userId": "u-cs-feedback",
+                  "tenantId": "T001",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "message": "客户 C001 最近 30 天为什么投诉量上升？相关处理制度是什么？",
+                  "returnCitations": true
+                }
+                """.formatted(conversationId);
+
+        String chatBody = mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode chat = objectMapper.readTree(chatBody);
+        String messageId = chat.get("messageId").asText();
+        String traceId = chat.get("traceId").asText();
+        assertThat(chat.get("citations")).isNotEmpty();
+
+        String feedbackPayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-cs-feedback",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "conversationId": "%s",
+                  "traceId": "%s",
+                  "rating": "NOT_HELPFUL",
+                  "reason": "CITATION_WEAK",
+                  "comment": "引用覆盖不足，需要进入评测样本池。"
+                }
+                """.formatted(conversationId, traceId);
+        String feedbackBody = mockMvc.perform(post("/api/agent/messages/{messageId}/feedback", messageId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(feedbackPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String feedbackId = objectMapper.readTree(feedbackBody).get("feedbackId").asText();
+
+        String feedbackListBody = mockMvc.perform(get("/api/agent/feedback")
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER")
+                        .param("rating", "NOT_HELPFUL")
+                        .param("limit", "20"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode feedbackRows = objectMapper.readTree(feedbackListBody);
+        assertThat(feedbackRows).anySatisfy(row -> {
+            assertThat(row.get("feedbackId").asText()).isEqualTo(feedbackId);
+            assertThat(row.get("sourceQuestion").asText()).contains("客户 C001");
+            assertThat(row.get("sourceAnswer").asText()).contains("C001");
+            assertThat(row.get("citations")).isNotEmpty();
+        });
+
+        String createCandidateBody = mockMvc.perform(post("/api/agent/feedback/{feedbackId}/eval-candidate", feedbackId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode candidate = objectMapper.readTree(createCandidateBody);
+        String candidateId = candidate.get("candidateId").asText();
+        assertThat(candidateId).startsWith("cand-");
+        assertThat(candidate.get("evalType").asText()).isEqualTo("RAG");
+        assertThat(candidate.get("expectedRagDocIds")).isNotEmpty();
+        assertThat(candidate.get("ragQuery").asText()).contains("客户 C001");
+
+        String ragExperimentBody = mockMvc.perform(post("/api/agent/eval-candidates/{candidateId}/rag-experiment", candidateId)
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER")
+                        .param("runNow", "true"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode ragExperiment = objectMapper.readTree(ragExperimentBody);
+        assertThat(ragExperiment.get("experiment").get("experimentId").asText()).startsWith("raglab-fb-");
+        assertThat(ragExperiment.get("runs")).isNotEmpty();
+        assertThat(ragExperiment.get("candidate").get("ragExperimentId").asText()).startsWith("raglab-fb-");
+
+        String promoteBody = mockMvc.perform(post("/api/agent/eval-candidates/{candidateId}/promote", candidateId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"],
+                                  "enabled": false
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode promoted = objectMapper.readTree(promoteBody);
+        String evalCaseId = promoted.get("evalCaseId").asText();
+        assertThat(evalCaseId).startsWith("feedback-");
+        assertThat(promoted.get("status").asText()).isEqualTo("EVAL_CASE_CREATED");
+
+        String casesBody = mockMvc.perform(get("/api/agent/evals/cases")
+                        .param("tenantId", "T001")
+                        .param("enabledOnly", "false"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode evalCases = objectMapper.readTree(casesBody);
+        assertThat(evalCases).anySatisfy(row -> {
+            assertThat(row.get("caseId").asText()).isEqualTo(evalCaseId);
+            assertThat(row.get("evalType").asText()).isEqualTo("RAG");
+            assertThat(row.get("enabled").asBoolean()).isFalse();
+        });
     }
 
     @Test

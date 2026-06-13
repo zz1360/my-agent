@@ -801,7 +801,8 @@
   const state = {
     sending: false,
     messages: [],
-    lastResponse: null
+    lastResponse: null,
+    lastUserMessage: ""
   };
 
   function newConversationId() {
@@ -1034,7 +1035,12 @@
         <p><span class="muted">traceId：</span><span class="mono">${escapeHtml(traceId || "暂无")}</span></p>
         <p><span class="muted">风险等级：</span>${riskChip(response.riskLevel)}</p>
         <p><span class="muted">置信度：</span>${escapeHtml(confidenceText(response.confidence))}</p>
-        ${traceId ? `<p><a class="button compact" href="/api/agent/audit/${encodeURIComponent(traceId)}" target="_blank" rel="noreferrer">打开审计</a></p>` : ""}
+        ${traceId ? `
+          <p class="feedback-row">
+            <a class="button compact" href="/api/agent/audit/${encodeURIComponent(traceId)}" target="_blank" rel="noreferrer">打开审计</a>
+            <button class="button compact" type="button" data-generate-actions="true">生成动作草稿</button>
+          </p>
+        ` : ""}
         ${response.messageId ? `
           <div class="feedback-row">
             <button class="button compact" type="button" data-feedback="HELPFUL">有帮助</button>
@@ -1154,6 +1160,37 @@
     showToast(`反馈已记录：${response.rating}`);
   }
 
+  function inferCustomerId() {
+    const source = `${state.lastUserMessage || ""}\n${state.lastResponse?.answer || ""}`;
+    const match = source.match(/\bC\d{3}\b/i);
+    return match ? match[0].toUpperCase() : "";
+  }
+
+  async function generateActionsFromCurrentAnswer() {
+    if (!state.lastResponse?.traceId) {
+      showToast("当前回答没有审计 trace，无法生成动作草稿");
+      return;
+    }
+    const customerId = inferCustomerId();
+    if (!customerId) {
+      showToast("没有识别到客户编号，暂时不能生成客户动作草稿");
+      return;
+    }
+    const result = await api("/api/agent/actions/from-diagnosis", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantId: fields.tenantId.value.trim() || "T001",
+        userId: fields.userId.value.trim() || "u-cs-001",
+        roles: rolesValue().length ? rolesValue() : ["CUSTOMER_SERVICE"],
+        traceId: state.lastResponse.traceId,
+        conversationId: fields.conversationId.value.trim(),
+        customerId,
+        days: 30
+      })
+    });
+    showToast(`已生成 ${result.length} 条动作草稿，可到动作管理台复核`);
+  }
+
   async function loadSamples() {
     const target = $("#samples");
     target.innerHTML = `<div class="empty">正在加载</div>`;
@@ -1176,6 +1213,7 @@
     fields.conversationId.value = newConversationId();
     state.messages = [];
     state.lastResponse = null;
+    state.lastUserMessage = "";
     $("#details").innerHTML = `<div class="empty">暂无回答详情</div>`;
     $("#latestTrace").textContent = "暂无";
     $("#latestRisk").textContent = "暂无";
@@ -1191,6 +1229,7 @@
     if (!message || state.sending) {
       return;
     }
+    state.lastUserMessage = message;
     state.sending = true;
     $("#sendButton").disabled = true;
     fields.messageInput.value = "";
@@ -1267,6 +1306,14 @@
     }
   });
   $("#details").addEventListener("click", async (event) => {
+    if (event.target.closest("button[data-generate-actions]")) {
+      try {
+        await generateActionsFromCurrentAnswer();
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
     const button = event.target.closest("button[data-feedback]");
     if (!button) {
       return;

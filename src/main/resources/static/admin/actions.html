@@ -679,6 +679,56 @@
           </div>
         </section>
 
+        <section class="panel" aria-labelledby="feedbackTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="feedbackTitle">反馈样本池</h2>
+              <p>将无帮助反馈转为可复现的评测候选</p>
+            </div>
+            <span class="chip warn" id="feedbackCount">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>反馈</th>
+                  <th>问题</th>
+                  <th>原因</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="feedbackBody">
+                <tr><td class="state" colspan="4">正在加载反馈样本</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="candidateTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="candidateTitle">评测候选</h2>
+              <p>从反馈沉淀为 RAG 实验或正式评测用例</p>
+            </div>
+            <span class="chip info" id="candidateCount">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>候选</th>
+                  <th>类型</th>
+                  <th>来源问题</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="candidateBody">
+                <tr><td class="state" colspan="4">正在加载评测候选</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="panel" aria-labelledby="metricsTitle">
           <div class="panel-head">
             <div class="panel-title">
@@ -718,7 +768,9 @@
       selectedActionId: "",
       latestActions: [],
       latestExecutions: [],
-      latestRetryQueue: []
+      latestRetryQueue: [],
+      latestFeedback: [],
+      latestCandidates: []
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -755,6 +807,15 @@
         }
       });
       return query.toString();
+    }
+
+    function contextBody(extra = {}) {
+      return {
+        tenantId: fields.tenantId.value.trim() || "T001",
+        userId: fields.userId.value.trim() || "admin-console",
+        roles: fields.roles.value.split(",").map((role) => role.trim()).filter(Boolean),
+        ...extra
+      };
     }
 
     async function api(path, options = {}) {
@@ -936,6 +997,76 @@
       renderBars("#targetSystemBars", "目标系统", metrics.byTargetSystem || []);
     }
 
+    async function loadFeedback() {
+      setLoading("#feedbackBody", 4, "正在加载反馈样本");
+      const rows = await api(`/api/agent/feedback?${params({ rating: "NOT_HELPFUL", limit: 20 })}`);
+      state.latestFeedback = rows;
+      $("#feedbackCount").textContent = `${rows.length} 条`;
+      if (!rows.length) {
+        $("#feedbackBody").innerHTML = `<tr><td class="state" colspan="4">暂无无帮助反馈样本</td></tr>`;
+        return;
+      }
+      $("#feedbackBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>
+            <div class="cell-main">
+              <span class="mono strong">${escapeHtml(shortId(row.feedbackId))}</span>
+              <span class="mono muted">${escapeHtml(shortId(row.traceId || row.conversationId))}</span>
+            </div>
+          </td>
+          <td>${escapeHtml(row.sourceQuestion || "-")}</td>
+          <td>
+            <div class="cell-main">
+              ${statusChip(row.rating)}
+              <span class="mono muted">${escapeHtml(row.reason || "-")}</span>
+              ${row.candidateId ? `<span class="mono muted">候选 ${escapeHtml(shortId(row.candidateId))}</span>` : ""}
+            </div>
+          </td>
+          <td>
+            <div class="chips">
+              <button class="button compact" type="button" data-feedback-id="${escapeHtml(row.feedbackId)}" data-role="feedback-detail">详情</button>
+              <button class="button compact" type="button" data-feedback-id="${escapeHtml(row.feedbackId)}" data-role="feedback-candidate"${row.candidateId ? " disabled" : ""}>转候选</button>
+            </div>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadCandidates() {
+      setLoading("#candidateBody", 4, "正在加载评测候选");
+      const rows = await api(`/api/agent/eval-candidates?${params({ limit: 20 })}`);
+      state.latestCandidates = rows;
+      $("#candidateCount").textContent = `${rows.length} 条`;
+      if (!rows.length) {
+        $("#candidateBody").innerHTML = `<tr><td class="state" colspan="4">暂无评测候选</td></tr>`;
+        return;
+      }
+      $("#candidateBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>
+            <div class="cell-main">
+              <span class="mono strong">${escapeHtml(shortId(row.candidateId))}</span>
+              <span class="mono muted">${escapeHtml(shortId(row.feedbackId))}</span>
+            </div>
+          </td>
+          <td>
+            <div class="cell-main">
+              <span class="mono">${escapeHtml(row.evalType)}</span>
+              ${statusChip(row.status)}
+            </div>
+          </td>
+          <td>${escapeHtml(row.sourceQuestion || "-")}</td>
+          <td>
+            <div class="chips">
+              <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-detail">详情</button>
+              <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-rag">RAG实验</button>
+              <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-promote">转评测</button>
+            </div>
+          </td>
+        </tr>
+      `).join("");
+    }
+
     function renderBars(selector, label, rows) {
       const target = $(selector);
       if (!rows.length) {
@@ -1036,6 +1167,109 @@
       }
     }
 
+    function showFeedbackDetail(feedbackId) {
+      const row = state.latestFeedback.find((item) => item.feedbackId === feedbackId);
+      if (!row) {
+        showToast("没有找到反馈详情");
+        return;
+      }
+      $("#detailPanel").innerHTML = `
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="detail-label">反馈 ID</div>
+            <div class="detail-value mono">${escapeHtml(row.feedbackId)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">反馈原因</div>
+            <div class="detail-value">${statusChip(row.rating)} <span class="mono">${escapeHtml(row.reason || "-")}</span></div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">会话</div>
+            <div class="detail-value mono">${escapeHtml(row.conversationId || "-")}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">候选状态</div>
+            <div class="detail-value">${row.candidateId ? statusChip(row.candidateStatus) : "未转候选"}</div>
+          </div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">用户问题</div>
+          <div class="detail-value">${escapeHtml(row.sourceQuestion || "-")}</div>
+        </div>
+        <pre class="message-box">${escapeHtml(row.sourceAnswer || "暂无回答内容")}</pre>
+        <pre class="json-box">${escapeHtml(formatJson(JSON.stringify(row.citations || [])))}</pre>
+      `;
+    }
+
+    function showCandidateDetail(candidateId) {
+      const row = state.latestCandidates.find((item) => item.candidateId === candidateId);
+      if (!row) {
+        showToast("没有找到评测候选详情");
+        return;
+      }
+      $("#detailPanel").innerHTML = `
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="detail-label">候选 ID</div>
+            <div class="detail-value mono">${escapeHtml(row.candidateId)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">类型/状态</div>
+            <div class="detail-value"><span class="mono">${escapeHtml(row.evalType)}</span> ${statusChip(row.status)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">评测用例</div>
+            <div class="detail-value mono">${escapeHtml(row.evalCaseId || "-")}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">RAG 实验</div>
+            <div class="detail-value mono">${escapeHtml(row.ragExperimentId || "-")}</div>
+          </div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">RAG 查询</div>
+          <div class="detail-value">${escapeHtml(row.ragQuery || row.sourceQuestion || "-")}</div>
+        </div>
+        <pre class="json-box">${escapeHtml(formatJson(JSON.stringify({
+          expectedContains: row.expectedContains || [],
+          expectedCitations: row.expectedCitations || [],
+          expectedRagDocIds: row.expectedRagDocIds || [],
+          expectedRagChunkIds: row.expectedRagChunkIds || [],
+          expectedMinToolCalls: row.expectedMinToolCalls,
+          expectedTopK: row.expectedTopK
+        })))}</pre>
+      `;
+    }
+
+    async function createCandidateFromFeedback(feedbackId) {
+      const result = await api(`/api/agent/feedback/${encodeURIComponent(feedbackId)}/eval-candidate`, {
+        method: "POST",
+        body: JSON.stringify(contextBody())
+      });
+      showToast(`已生成评测候选：${result.candidateId}`);
+      await Promise.all([loadFeedback(), loadCandidates()]);
+      showCandidateDetail(result.candidateId);
+    }
+
+    async function runCandidateRagExperiment(candidateId) {
+      const result = await api(`/api/agent/eval-candidates/${encodeURIComponent(candidateId)}/rag-experiment?${params({ runNow: "true" })}`, {
+        method: "POST"
+      });
+      showToast(`RAG 实验已创建：${result.experiment.experimentId}，运行 ${result.runs.length} 次`);
+      await loadCandidates();
+      showCandidateDetail(candidateId);
+    }
+
+    async function promoteCandidate(candidateId) {
+      const result = await api(`/api/agent/eval-candidates/${encodeURIComponent(candidateId)}/promote`, {
+        method: "POST",
+        body: JSON.stringify(contextBody({ enabled: false }))
+      });
+      showToast(`已转为评测用例：${result.evalCaseId}`);
+      await loadCandidates();
+      showCandidateDetail(candidateId);
+    }
+
     async function retryExecution(executionId) {
       const body = {
         tenantId: fields.tenantId.value.trim() || "T001",
@@ -1079,7 +1313,9 @@
           }),
           loadActions().catch((error) => setError("#actionsBody", 7, error)),
           loadExecutions().catch((error) => setError("#executionsBody", 7, error)),
-          loadRetryQueue().catch((error) => setError("#retryBody", 4, error))
+          loadRetryQueue().catch((error) => setError("#retryBody", 4, error)),
+          loadFeedback().catch((error) => setError("#feedbackBody", 4, error)),
+          loadCandidates().catch((error) => setError("#candidateBody", 4, error))
         ]);
       } finally {
         $("#refreshButton").disabled = false;
@@ -1096,6 +1332,16 @@
           showExecutionDetail(target.dataset.executionId);
         } else if (target.dataset.role === "retry") {
           await retryExecution(target.dataset.executionId);
+        } else if (target.dataset.role === "feedback-detail") {
+          showFeedbackDetail(target.dataset.feedbackId);
+        } else if (target.dataset.role === "feedback-candidate") {
+          await createCandidateFromFeedback(target.dataset.feedbackId);
+        } else if (target.dataset.role === "candidate-detail") {
+          showCandidateDetail(target.dataset.candidateId);
+        } else if (target.dataset.role === "candidate-rag") {
+          await runCandidateRagExperiment(target.dataset.candidateId);
+        } else if (target.dataset.role === "candidate-promote") {
+          await promoteCandidate(target.dataset.candidateId);
         }
       } catch (error) {
         showToast(error.message);
