@@ -47,6 +47,22 @@ class LogisticsAgentApplicationTests {
     }
 
     @Test
+    void chatConsoleStaticPageLoads() throws Exception {
+        String body = mockMvc.perform(get("/chat.html"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(body)
+                .contains("物流 Agent 对话台")
+                .contains("常用问题")
+                .contains("回答详情")
+                .contains("/api/agent/chat")
+                .contains("/api/demo/questions");
+    }
+
+    @Test
     void flywayMigratesSchemaAndSeedsEvalCases() {
         Integer migrations = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM flyway_schema_history", Integer.class);
         Integer evalCases = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_case WHERE tenant_id = ?", Integer.class, "T001");
