@@ -3,13 +3,13 @@ package com.superagent.logistics.api.dto;
 import java.time.Instant;
 import java.util.List;
 
-public record AgentChatResponse(
-        String traceId,
-        String conversationId,
+public record AgentMessageResponse(
         String messageId,
-        String answer,
+        String role,
+        String content,
+        String traceId,
         String riskLevel,
-        double confidence,
+        Double confidence,
         List<Citation> citations,
         List<ToolCallSummary> toolCalls,
         Instant createdAt

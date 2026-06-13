@@ -175,6 +175,7 @@ public class LogisticsAgentService {
         return new AgentChatResponse(
                 traceId,
                 request.conversationId(),
+                newMessageId(),
                 answer,
                 riskLevel,
                 confidence(toolCalls, knowledgeResults, customerId, waybillId),
@@ -247,6 +248,7 @@ public class LogisticsAgentService {
             return new AgentChatResponse(
                     traceId,
                     request.conversationId(),
+                    newMessageId(),
                     maskedAnswer,
                     riskLevel,
                     Math.min(0.94, confidence(toolCalls, knowledgeResults, customerId, waybillId)),
@@ -297,6 +299,10 @@ public class LogisticsAgentService {
                     .append("  content: ").append(result.chunk().content()).append("\n");
         }
         return builder.toString();
+    }
+
+    private String newMessageId() {
+        return "msg-ai-" + UUID.randomUUID().toString().substring(0, 12);
     }
 
     private String buildAnswer(String message, DateRange range, boolean suspicious, CustomerProfile customer,

@@ -13,8 +13,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -59,6 +61,9 @@ class LogisticsAgentApplicationTests {
                 .contains("常用问题")
                 .contains("回答详情")
                 .contains("/api/agent/chat")
+                .contains("/api/agent/chat/stream")
+                .contains("/api/agent/conversations")
+                .contains("data-feedback")
                 .contains("/api/demo/questions");
     }
 
@@ -97,6 +102,13 @@ class LogisticsAgentApplicationTests {
         assertThat(opsTasks).isNotNull();
         assertThat(replyDrafts).isNotNull();
         assertThat(compensationReviews).isNotNull();
+        assertThat(migrations).isGreaterThanOrEqualTo(9);
+        Integer conversations = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_conversation", Integer.class);
+        Integer messages = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_message", Integer.class);
+        Integer feedback = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_message_feedback", Integer.class);
+        assertThat(conversations).isNotNull();
+        assertThat(messages).isNotNull();
+        assertThat(feedback).isNotNull();
     }
 
     @Test
@@ -122,10 +134,119 @@ class LogisticsAgentApplicationTests {
 
         JsonNode response = objectMapper.readTree(body);
         assertThat(response.get("traceId").asText()).startsWith("trace-");
+        assertThat(response.get("messageId").asText()).startsWith("msg-ai-");
         assertThat(response.get("riskLevel").asText()).isEqualTo("L3");
         assertThat(response.get("answer").asText()).contains("WB202606010023", "运输时效与延误赔付政策");
         assertThat(response.get("citations")).isNotEmpty();
         assertThat(response.get("toolCalls")).hasSize(2);
+    }
+
+    @Test
+    void chatPersistsConversationHistoryAndFeedback() throws Exception {
+        String conversationId = "conv-test-history";
+        String payload = """
+                {
+                  "conversationId": "%s",
+                  "userId": "u-cs-history",
+                  "tenantId": "T001",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "message": "客户 C001 最近 30 天为什么投诉量上升？相关处理制度是什么？",
+                  "returnCitations": true
+                }
+                """.formatted(conversationId);
+
+        String chatBody = mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode chat = objectMapper.readTree(chatBody);
+        String messageId = chat.get("messageId").asText();
+        assertThat(messageId).startsWith("msg-ai-");
+
+        String listBody = mockMvc.perform(get("/api/agent/conversations")
+                        .param("tenantId", "T001")
+                        .param("userId", "u-cs-history")
+                        .param("roles", "CUSTOMER_SERVICE"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode conversations = objectMapper.readTree(listBody);
+        assertThat(conversations).anySatisfy(row ->
+                assertThat(row.get("conversationId").asText()).isEqualTo(conversationId));
+
+        String detailBody = mockMvc.perform(get("/api/agent/conversations/{conversationId}", conversationId)
+                        .param("tenantId", "T001")
+                        .param("userId", "u-cs-history")
+                        .param("roles", "CUSTOMER_SERVICE"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode detail = objectMapper.readTree(detailBody);
+        assertThat(detail.get("messages")).hasSize(2);
+        assertThat(detail.get("messages").get(1).get("messageId").asText()).isEqualTo(messageId);
+        assertThat(detail.get("messages").get(1).get("citations")).isNotEmpty();
+
+        String feedbackPayload = """
+                {
+                  "tenantId": "T001",
+                  "userId": "u-cs-history",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "conversationId": "%s",
+                  "traceId": "%s",
+                  "rating": "HELPFUL",
+                  "reason": "ANSWER_USEFUL",
+                  "comment": "引用和工具链路清楚"
+                }
+                """.formatted(conversationId, chat.get("traceId").asText());
+        String feedbackBody = mockMvc.perform(post("/api/agent/messages/{messageId}/feedback", messageId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(feedbackPayload))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode feedback = objectMapper.readTree(feedbackBody);
+        assertThat(feedback.get("feedbackId").asText()).startsWith("fb-");
+        assertThat(feedback.get("rating").asText()).isEqualTo("HELPFUL");
+    }
+
+    @Test
+    void chatStreamReturnsSseEvents() throws Exception {
+        String payload = """
+                {
+                  "conversationId": "conv-test-stream",
+                  "userId": "u-cs-stream",
+                  "tenantId": "T001",
+                  "roles": ["CUSTOMER_SERVICE"],
+                  "message": "运单 WB202606010023 是否可能满足延误赔付条件？",
+                  "returnCitations": true
+                }
+                """;
+
+        var result = mockMvc.perform(post("/api/agent/chat/stream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .content(payload))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String body = mockMvc.perform(asyncDispatch(result))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(body)
+                .contains("event:status")
+                .contains("event:delta")
+                .contains("event:complete")
+                .contains("traceId")
+                .contains("messageId");
     }
 
     @Test
