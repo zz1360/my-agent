@@ -43,7 +43,8 @@
 
     button,
     input,
-    select {
+    select,
+    textarea {
       font: inherit;
     }
 
@@ -405,6 +406,35 @@
       color: #344054;
     }
 
+    .annotation-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .annotation-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .annotation-form input,
+    .annotation-form select,
+    .annotation-form textarea {
+      width: 100%;
+      min-height: 34px;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--text);
+      outline: none;
+    }
+
+    .annotation-form textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+
     .subgrid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -489,7 +519,8 @@
       .toolbar,
       .kpi-grid,
       .subgrid,
-      .detail-grid {
+      .detail-grid,
+      .annotation-grid {
         grid-template-columns: 1fr;
       }
 
@@ -679,6 +710,43 @@
           </div>
         </section>
 
+        <section class="panel" aria-labelledby="feedbackMetricsTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="feedbackMetricsTitle">反馈质量看板</h2>
+              <p>负反馈、候选转化、审批和实验通过率</p>
+            </div>
+          </div>
+          <div class="detail">
+            <div class="detail-grid">
+              <div class="detail-item">
+                <div class="detail-label">负反馈率</div>
+                <div class="detail-value" id="negativeRate">--</div>
+              </div>
+              <div class="detail-item">
+                <div class="detail-label">候选转化率</div>
+                <div class="detail-value" id="candidateConversionRate">--</div>
+              </div>
+              <div class="detail-item">
+                <div class="detail-label">候选通过率</div>
+                <div class="detail-value" id="approvedCandidateRate">--</div>
+              </div>
+              <div class="detail-item">
+                <div class="detail-label">RAG 实验通过率</div>
+                <div class="detail-value" id="ragExperimentPassRate">--</div>
+              </div>
+            </div>
+            <div class="subgrid">
+              <div class="mini-bars" id="feedbackReasonBars"></div>
+              <div class="mini-bars" id="feedbackTagBars"></div>
+            </div>
+            <div class="subgrid">
+              <div class="mini-bars" id="candidateReviewBars"></div>
+              <div class="mini-bars" id="ragExperimentStatusBars"></div>
+            </div>
+          </div>
+        </section>
+
         <section class="panel" aria-labelledby="feedbackTitle">
           <div class="panel-head">
             <div class="panel-title">
@@ -718,12 +786,13 @@
                 <tr>
                   <th>候选</th>
                   <th>类型</th>
+                  <th>审批</th>
                   <th>来源问题</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody id="candidateBody">
-                <tr><td class="state" colspan="4">正在加载评测候选</td></tr>
+                <tr><td class="state" colspan="5">正在加载评测候选</td></tr>
               </tbody>
             </table>
           </div>
@@ -770,7 +839,8 @@
       latestExecutions: [],
       latestRetryQueue: [],
       latestFeedback: [],
-      latestCandidates: []
+      latestCandidates: [],
+      latestQuality: null
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -872,6 +942,15 @@
     function formatRate(value) {
       if (value === undefined || value === null || Number.isNaN(Number(value))) return "--";
       return `${Math.round(Number(value) * 1000) / 10}%`;
+    }
+
+    function lines(values) {
+      return (values || []).join("\n");
+    }
+
+    function lineValues(selector) {
+      const field = $(selector);
+      return field ? field.value.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean) : [];
     }
 
     function setLoading(tbodyId, colspan, message) {
@@ -997,6 +1076,19 @@
       renderBars("#targetSystemBars", "目标系统", metrics.byTargetSystem || []);
     }
 
+    async function loadFeedbackQuality() {
+      const metrics = await api(`/api/agent/feedback/quality-metrics?${params()}`);
+      state.latestQuality = metrics;
+      $("#negativeRate").textContent = formatRate(metrics.negativeRate);
+      $("#candidateConversionRate").textContent = formatRate(metrics.candidateConversionRate);
+      $("#approvedCandidateRate").textContent = formatRate(metrics.approvedCandidateRate);
+      $("#ragExperimentPassRate").textContent = formatRate(metrics.ragExperimentPassRate);
+      renderBars("#feedbackReasonBars", "反馈原因", metrics.byReason || []);
+      renderBars("#feedbackTagBars", "反馈标签", metrics.byTag || []);
+      renderBars("#candidateReviewBars", "审批状态", metrics.byReviewStatus || []);
+      renderBars("#ragExperimentStatusBars", "实验状态", metrics.ragExperimentStatus || []);
+    }
+
     async function loadFeedback() {
       setLoading("#feedbackBody", 4, "正在加载反馈样本");
       const rows = await api(`/api/agent/feedback?${params({ rating: "NOT_HELPFUL", limit: 20 })}`);
@@ -1033,12 +1125,12 @@
     }
 
     async function loadCandidates() {
-      setLoading("#candidateBody", 4, "正在加载评测候选");
+      setLoading("#candidateBody", 5, "正在加载评测候选");
       const rows = await api(`/api/agent/eval-candidates?${params({ limit: 20 })}`);
       state.latestCandidates = rows;
       $("#candidateCount").textContent = `${rows.length} 条`;
       if (!rows.length) {
-        $("#candidateBody").innerHTML = `<tr><td class="state" colspan="4">暂无评测候选</td></tr>`;
+        $("#candidateBody").innerHTML = `<tr><td class="state" colspan="5">暂无评测候选</td></tr>`;
         return;
       }
       $("#candidateBody").innerHTML = rows.map((row) => `
@@ -1055,10 +1147,18 @@
               ${statusChip(row.status)}
             </div>
           </td>
+          <td>
+            <div class="cell-main">
+              ${statusChip(row.reviewStatus || "UNREVIEWED")}
+              <span class="mono muted">${escapeHtml((row.feedbackTags || []).join(",")) || "-"}</span>
+            </div>
+          </td>
           <td>${escapeHtml(row.sourceQuestion || "-")}</td>
           <td>
             <div class="chips">
               <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-detail">详情</button>
+              <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-approve">通过</button>
+              <button class="button compact danger" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-reject">驳回</button>
               <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-rag">RAG实验</button>
               <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-promote">转评测</button>
             </div>
@@ -1218,6 +1318,10 @@
             <div class="detail-value"><span class="mono">${escapeHtml(row.evalType)}</span> ${statusChip(row.status)}</div>
           </div>
           <div class="detail-item">
+            <div class="detail-label">审批状态</div>
+            <div class="detail-value">${statusChip(row.reviewStatus || "UNREVIEWED")}</div>
+          </div>
+          <div class="detail-item">
             <div class="detail-label">评测用例</div>
             <div class="detail-value mono">${escapeHtml(row.evalCaseId || "-")}</div>
           </div>
@@ -1230,13 +1334,67 @@
           <div class="detail-label">RAG 查询</div>
           <div class="detail-value">${escapeHtml(row.ragQuery || row.sourceQuestion || "-")}</div>
         </div>
+        <form class="annotation-form" data-candidate-form="${escapeHtml(row.candidateId)}">
+          <div class="annotation-grid">
+            <label class="field">
+              <span>评测类型</span>
+              <select id="candidateEvalType">
+                <option value="AGENT"${row.evalType === "AGENT" ? " selected" : ""}>AGENT</option>
+                <option value="RAG"${row.evalType === "RAG" ? " selected" : ""}>RAG</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>TopK</span>
+              <input id="candidateTopK" type="number" min="1" max="20" value="${escapeHtml(row.expectedTopK || 5)}">
+            </label>
+          </div>
+          <label class="field">
+            <span>RAG 查询</span>
+            <textarea id="candidateRagQuery">${escapeHtml(row.ragQuery || row.sourceQuestion || "")}</textarea>
+          </label>
+          <div class="annotation-grid">
+            <label class="field">
+              <span>期望关键词</span>
+              <textarea id="candidateExpectedContains">${escapeHtml(lines(row.expectedContains))}</textarea>
+            </label>
+            <label class="field">
+              <span>期望引用</span>
+              <textarea id="candidateExpectedCitations">${escapeHtml(lines(row.expectedCitations))}</textarea>
+            </label>
+            <label class="field">
+              <span>期望 DocId</span>
+              <textarea id="candidateExpectedDocs">${escapeHtml(lines(row.expectedRagDocIds))}</textarea>
+            </label>
+            <label class="field">
+              <span>期望 ChunkId</span>
+              <textarea id="candidateExpectedChunks">${escapeHtml(lines(row.expectedRagChunkIds))}</textarea>
+            </label>
+          </div>
+          <label class="field">
+            <span>反馈标签</span>
+            <textarea id="candidateFeedbackTags">${escapeHtml(lines(row.feedbackTags))}</textarea>
+          </label>
+          <label class="field">
+            <span>标注备注</span>
+            <textarea id="candidateAnnotationNote">${escapeHtml(row.annotationNote || "")}</textarea>
+          </label>
+          <div class="chips">
+            <button class="button compact primary" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-annotate-save">保存标注</button>
+            <button class="button compact" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-approve">审批通过</button>
+            <button class="button compact danger" type="button" data-candidate-id="${escapeHtml(row.candidateId)}" data-role="candidate-reject">驳回</button>
+          </div>
+        </form>
         <pre class="json-box">${escapeHtml(formatJson(JSON.stringify({
           expectedContains: row.expectedContains || [],
           expectedCitations: row.expectedCitations || [],
           expectedRagDocIds: row.expectedRagDocIds || [],
           expectedRagChunkIds: row.expectedRagChunkIds || [],
           expectedMinToolCalls: row.expectedMinToolCalls,
-          expectedTopK: row.expectedTopK
+          expectedTopK: row.expectedTopK,
+          feedbackTags: row.feedbackTags || [],
+          annotationNote: row.annotationNote || "",
+          reviewerId: row.reviewerId || "",
+          reviewComment: row.reviewComment || ""
         })))}</pre>
       `;
     }
@@ -1247,8 +1405,41 @@
         body: JSON.stringify(contextBody())
       });
       showToast(`已生成评测候选：${result.candidateId}`);
-      await Promise.all([loadFeedback(), loadCandidates()]);
+      await Promise.all([loadFeedback(), loadCandidates(), loadFeedbackQuality()]);
       showCandidateDetail(result.candidateId);
+    }
+
+    async function saveCandidateAnnotation(candidateId) {
+      const result = await api(`/api/agent/eval-candidates/${encodeURIComponent(candidateId)}/annotate`, {
+        method: "POST",
+        body: JSON.stringify(contextBody({
+          evalType: $("#candidateEvalType")?.value || "RAG",
+          expectedContains: lineValues("#candidateExpectedContains"),
+          expectedCitations: lineValues("#candidateExpectedCitations"),
+          expectedRagDocIds: lineValues("#candidateExpectedDocs"),
+          expectedRagChunkIds: lineValues("#candidateExpectedChunks"),
+          expectedTopK: Number($("#candidateTopK")?.value || 5),
+          ragQuery: $("#candidateRagQuery")?.value || "",
+          feedbackTags: lineValues("#candidateFeedbackTags"),
+          annotationNote: $("#candidateAnnotationNote")?.value || ""
+        }))
+      });
+      showToast(`标注已保存：${result.candidateId}`);
+      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
+      showCandidateDetail(candidateId);
+    }
+
+    async function reviewCandidate(candidateId, reviewStatus) {
+      const result = await api(`/api/agent/eval-candidates/${encodeURIComponent(candidateId)}/review`, {
+        method: "POST",
+        body: JSON.stringify(contextBody({
+          reviewStatus,
+          comment: reviewStatus === "APPROVED" ? "管理台审批通过" : "管理台驳回"
+        }))
+      });
+      showToast(`候选审批状态：${result.reviewStatus}`);
+      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
+      showCandidateDetail(candidateId);
     }
 
     async function runCandidateRagExperiment(candidateId) {
@@ -1256,17 +1447,17 @@
         method: "POST"
       });
       showToast(`RAG 实验已创建：${result.experiment.experimentId}，运行 ${result.runs.length} 次`);
-      await loadCandidates();
+      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
       showCandidateDetail(candidateId);
     }
 
     async function promoteCandidate(candidateId) {
       const result = await api(`/api/agent/eval-candidates/${encodeURIComponent(candidateId)}/promote`, {
         method: "POST",
-        body: JSON.stringify(contextBody({ enabled: false }))
+        body: JSON.stringify(contextBody({ enabled: true }))
       });
       showToast(`已转为评测用例：${result.evalCaseId}`);
-      await loadCandidates();
+      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
       showCandidateDetail(candidateId);
     }
 
@@ -1315,7 +1506,14 @@
           loadExecutions().catch((error) => setError("#executionsBody", 7, error)),
           loadRetryQueue().catch((error) => setError("#retryBody", 4, error)),
           loadFeedback().catch((error) => setError("#feedbackBody", 4, error)),
-          loadCandidates().catch((error) => setError("#candidateBody", 4, error))
+          loadCandidates().catch((error) => setError("#candidateBody", 5, error)),
+          loadFeedbackQuality().catch((error) => {
+            showToast(`反馈质量指标加载失败：${error.message}`);
+            renderBars("#feedbackReasonBars", "反馈原因", []);
+            renderBars("#feedbackTagBars", "反馈标签", []);
+            renderBars("#candidateReviewBars", "审批状态", []);
+            renderBars("#ragExperimentStatusBars", "实验状态", []);
+          })
         ]);
       } finally {
         $("#refreshButton").disabled = false;
@@ -1338,6 +1536,12 @@
           await createCandidateFromFeedback(target.dataset.feedbackId);
         } else if (target.dataset.role === "candidate-detail") {
           showCandidateDetail(target.dataset.candidateId);
+        } else if (target.dataset.role === "candidate-annotate-save") {
+          await saveCandidateAnnotation(target.dataset.candidateId);
+        } else if (target.dataset.role === "candidate-approve") {
+          await reviewCandidate(target.dataset.candidateId, "APPROVED");
+        } else if (target.dataset.role === "candidate-reject") {
+          await reviewCandidate(target.dataset.candidateId, "REJECTED");
         } else if (target.dataset.role === "candidate-rag") {
           await runCandidateRagExperiment(target.dataset.candidateId);
         } else if (target.dataset.role === "candidate-promote") {

@@ -5,9 +5,13 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.superagent.logistics.api.dto.AgentFeedbackSampleResponse;
 import com.superagent.logistics.api.dto.Citation;
+import com.superagent.logistics.api.dto.EvalCaseCandidateAnnotateRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidateCreateRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidatePromoteRequest;
+import com.superagent.logistics.api.dto.EvalCaseCandidateReviewRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidateResponse;
+import com.superagent.logistics.api.dto.FeedbackQualityMetricsResponse;
+import com.superagent.logistics.api.dto.FeedbackQualityMetricsResponse.MetricCount;
 import com.superagent.logistics.api.dto.FeedbackRagExperimentResponse;
 import com.superagent.logistics.api.dto.RagExperimentRequest;
 import com.superagent.logistics.api.dto.RagExperimentResponse;
@@ -140,6 +144,7 @@ public class FeedbackLearningService {
                 : Math.max(0, request.expectedMinToolCalls());
         int expectedTopK = request.expectedTopK() == null ? 5 : Math.max(1, Math.min(request.expectedTopK(), 20));
         String ragQuery = firstNonBlank(request.ragQuery(), feedback.sourceQuestion());
+        List<String> feedbackTags = defaultFeedbackTags(feedback.reason());
         String candidateId = "cand-" + UUID.randomUUID().toString().substring(0, 10);
         Instant now = Instant.now();
         jdbcTemplate.update("""
@@ -147,8 +152,9 @@ public class FeedbackLearningService {
                         (tenant_id, candidate_id, feedback_id, conversation_id, message_id, trace_id, source_question,
                          source_answer, rating, reason, endpoint, eval_type, expected_contains, expected_citations,
                          expected_rag_doc_ids, expected_rag_chunk_ids, expected_min_tool_calls, expected_top_k,
-                         rag_query, status, eval_case_id, rag_experiment_id, created_by, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         rag_query, status, feedback_tags, annotation_note, review_status, reviewer_id, review_comment,
+                         reviewed_at, annotated_by, annotated_at, eval_case_id, rag_experiment_id, created_by, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 context.tenantId(),
                 candidateId,
@@ -170,6 +176,14 @@ public class FeedbackLearningService {
                 expectedTopK,
                 ragQuery,
                 "CANDIDATE",
+                joinLines(feedbackTags),
+                null,
+                "UNREVIEWED",
+                null,
+                null,
+                null,
+                null,
+                null,
                 null,
                 null,
                 context.userId(),
@@ -178,11 +192,88 @@ public class FeedbackLearningService {
         return getCandidate(context.tenantId(), candidateId);
     }
 
+    public EvalCaseCandidateResponse annotateCandidate(String candidateId, EvalCaseCandidateAnnotateRequest request) {
+        AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        permissionService.checkBusinessReadable(context);
+        checkFeedbackMaintainer(context);
+        EvalCaseCandidateResponse current = getCandidate(context.tenantId(), candidateId);
+        if ("REJECTED".equals(current.reviewStatus())) {
+            throw new IllegalArgumentException("已驳回的评测候选不能继续标注");
+        }
+        String evalType = request.evalType() == null || request.evalType().isBlank()
+                ? current.evalType()
+                : resolveEvalType(request.evalType(), current.reason());
+        String endpoint = firstNonBlank(request.endpoint(), firstNonBlank(current.endpoint(), resolveEndpoint(null, evalType)));
+        List<String> expectedContains = overrideOrDefault(request.expectedContains(), current.expectedContains());
+        List<String> expectedCitations = overrideOrDefault(request.expectedCitations(), current.expectedCitations());
+        List<String> expectedRagDocIds = overrideOrDefault(request.expectedRagDocIds(), current.expectedRagDocIds());
+        List<String> expectedRagChunkIds = overrideOrDefault(request.expectedRagChunkIds(), current.expectedRagChunkIds());
+        int expectedMinToolCalls = request.expectedMinToolCalls() == null ? current.expectedMinToolCalls() : Math.max(0, request.expectedMinToolCalls());
+        int expectedTopK = request.expectedTopK() == null ? current.expectedTopK() : Math.max(1, Math.min(request.expectedTopK(), 20));
+        String ragQuery = firstNonBlank(request.ragQuery(), current.ragQuery());
+        List<String> feedbackTags = request.feedbackTags() == null ? current.feedbackTags() : distinct(request.feedbackTags());
+        String annotationNote = request.annotationNote() == null ? current.annotationNote() : request.annotationNote();
+        Instant now = Instant.now();
+        jdbcTemplate.update("""
+                        UPDATE ai_eval_case_candidate
+                        SET endpoint = ?, eval_type = ?, expected_contains = ?, expected_citations = ?,
+                            expected_rag_doc_ids = ?, expected_rag_chunk_ids = ?, expected_min_tool_calls = ?,
+                            expected_top_k = ?, rag_query = ?, feedback_tags = ?, annotation_note = ?,
+                            annotated_by = ?, annotated_at = ?, updated_at = ?
+                        WHERE tenant_id = ? AND candidate_id = ?
+                        """,
+                endpoint,
+                evalType,
+                joinLines(expectedContains),
+                joinLines(expectedCitations),
+                joinLines(expectedRagDocIds),
+                joinLines(expectedRagChunkIds),
+                expectedMinToolCalls,
+                expectedTopK,
+                ragQuery,
+                joinLines(feedbackTags),
+                blankToNull(annotationNote),
+                context.userId(),
+                Timestamp.from(now),
+                Timestamp.from(now),
+                context.tenantId(),
+                candidateId);
+        return getCandidate(context.tenantId(), candidateId);
+    }
+
+    public EvalCaseCandidateResponse reviewCandidate(String candidateId, EvalCaseCandidateReviewRequest request) {
+        AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        permissionService.checkBusinessReadable(context);
+        checkFeedbackMaintainer(context);
+        getCandidate(context.tenantId(), candidateId);
+        String reviewStatus = normalizeReviewStatus(request.reviewStatus());
+        Instant now = Instant.now();
+        jdbcTemplate.update("""
+                        UPDATE ai_eval_case_candidate
+                        SET review_status = ?, reviewer_id = ?, review_comment = ?, reviewed_at = ?, updated_at = ?
+                        WHERE tenant_id = ? AND candidate_id = ?
+                        """,
+                reviewStatus,
+                context.userId(),
+                blankToNull(request.comment()),
+                Timestamp.from(now),
+                Timestamp.from(now),
+                context.tenantId(),
+                candidateId);
+        return getCandidate(context.tenantId(), candidateId);
+    }
+
     public EvalCaseCandidateResponse promoteToEvalCase(String candidateId, EvalCaseCandidatePromoteRequest request) {
         AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
         permissionService.checkBusinessReadable(context);
         checkFeedbackMaintainer(context);
         EvalCaseCandidateResponse candidate = getCandidate(context.tenantId(), candidateId);
+        if ("REJECTED".equals(candidate.reviewStatus())) {
+            throw new IllegalArgumentException("已驳回的评测候选不能转为正式评测用例");
+        }
+        if (Boolean.TRUE.equals(request.enabled()) && !"APPROVED".equals(candidate.reviewStatus())) {
+            throw new IllegalArgumentException("只有审批通过的评测候选才能启用为正式评测用例");
+        }
         String caseId = firstNonBlank(request.caseId(), "feedback-" + candidate.candidateId().replace("cand-", ""));
         List<String> expectedContains = overrideOrDefault(request.expectedContains(), candidate.expectedContains());
         List<String> expectedCitations = overrideOrDefault(request.expectedCitations(), candidate.expectedCitations());
@@ -244,6 +335,9 @@ public class FeedbackLearningService {
         permissionService.checkBusinessReadable(context);
         checkFeedbackMaintainer(context);
         EvalCaseCandidateResponse candidate = getCandidate(context.tenantId(), candidateId);
+        if ("REJECTED".equals(candidate.reviewStatus())) {
+            throw new IllegalArgumentException("已驳回的评测候选不能创建 RAG 实验");
+        }
         if (candidate.expectedRagDocIds().isEmpty() && candidate.expectedRagChunkIds().isEmpty()) {
             throw new IllegalArgumentException("候选样本缺少期望引用，无法创建 RAG 实验");
         }
@@ -279,6 +373,99 @@ public class FeedbackLearningService {
                 context.tenantId(),
                 candidateId);
         return new FeedbackRagExperimentResponse(getCandidate(context.tenantId(), candidateId), experiment, runs);
+    }
+
+    public FeedbackQualityMetricsResponse qualityMetrics(String tenantId, String userId, List<String> roles) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        permissionService.checkBusinessReadable(context);
+        checkFeedbackMaintainer(context);
+        long totalFeedback = count("""
+                SELECT COUNT(*) FROM ai_agent_message_feedback
+                WHERE tenant_id = ?
+                """, context.tenantId());
+        long helpfulFeedback = count("""
+                SELECT COUNT(*) FROM ai_agent_message_feedback
+                WHERE tenant_id = ? AND rating = 'HELPFUL'
+                """, context.tenantId());
+        long notHelpfulFeedback = count("""
+                SELECT COUNT(*) FROM ai_agent_message_feedback
+                WHERE tenant_id = ? AND rating = 'NOT_HELPFUL'
+                """, context.tenantId());
+        long candidateCount = count("""
+                SELECT COUNT(*) FROM ai_eval_case_candidate
+                WHERE tenant_id = ?
+                """, context.tenantId());
+        long approvedCandidates = count("""
+                SELECT COUNT(*) FROM ai_eval_case_candidate
+                WHERE tenant_id = ? AND review_status = 'APPROVED'
+                """, context.tenantId());
+        long rejectedCandidates = count("""
+                SELECT COUNT(*) FROM ai_eval_case_candidate
+                WHERE tenant_id = ? AND review_status = 'REJECTED'
+                """, context.tenantId());
+        long convertedEvalCases = count("""
+                SELECT COUNT(*) FROM ai_eval_case_candidate
+                WHERE tenant_id = ? AND eval_case_id IS NOT NULL
+                """, context.tenantId());
+        long ragExperimentCandidates = count("""
+                SELECT COUNT(*) FROM ai_eval_case_candidate
+                WHERE tenant_id = ? AND rag_experiment_id IS NOT NULL
+                """, context.tenantId());
+        List<MetricCount> byReason = groupCounts("""
+                SELECT COALESCE(reason, 'UNKNOWN') AS name, COUNT(*) AS metric_count
+                FROM ai_agent_message_feedback
+                WHERE tenant_id = ?
+                GROUP BY COALESCE(reason, 'UNKNOWN')
+                ORDER BY metric_count DESC
+                """, context.tenantId());
+        List<MetricCount> byReviewStatus = groupCounts("""
+                SELECT review_status AS name, COUNT(*) AS metric_count
+                FROM ai_eval_case_candidate
+                WHERE tenant_id = ?
+                GROUP BY review_status
+                ORDER BY metric_count DESC
+                """, context.tenantId());
+        List<MetricCount> ragExperimentStatus = groupCounts("""
+                SELECT r.status AS name, COUNT(*) AS metric_count
+                FROM ai_rag_experiment_run r
+                JOIN ai_eval_case_candidate c ON r.tenant_id = c.tenant_id AND r.experiment_id = c.rag_experiment_id
+                WHERE c.tenant_id = ?
+                GROUP BY r.status
+                ORDER BY metric_count DESC
+                """, context.tenantId());
+        List<MetricCount> evalRunStatus = groupCounts("""
+                SELECT CASE WHEN r.passed = 1 THEN 'PASSED' ELSE 'FAILED' END AS name, COUNT(*) AS metric_count
+                FROM ai_eval_case_result r
+                JOIN ai_eval_case_candidate c ON r.case_id = c.eval_case_id
+                WHERE c.tenant_id = ?
+                GROUP BY CASE WHEN r.passed = 1 THEN 'PASSED' ELSE 'FAILED' END
+                ORDER BY metric_count DESC
+                """, context.tenantId());
+        List<MetricCount> byTag = tagCounts(context.tenantId());
+        long ragRunTotal = sumCounts(ragExperimentStatus);
+        long ragRunPassed = countByName(ragExperimentStatus, "PASSED");
+        long evalResultTotal = sumCounts(evalRunStatus);
+        long evalResultPassed = countByName(evalRunStatus, "PASSED");
+        return new FeedbackQualityMetricsResponse(
+                totalFeedback,
+                helpfulFeedback,
+                notHelpfulFeedback,
+                rate(notHelpfulFeedback, totalFeedback),
+                candidateCount,
+                approvedCandidates,
+                rejectedCandidates,
+                convertedEvalCases,
+                ragExperimentCandidates,
+                rate(candidateCount, notHelpfulFeedback),
+                rate(approvedCandidates, candidateCount),
+                rate(ragRunPassed, ragRunTotal),
+                rate(evalResultPassed, evalResultTotal),
+                byReason,
+                byTag,
+                byReviewStatus,
+                ragExperimentStatus,
+                evalRunStatus
+        );
     }
 
     private Optional<AgentFeedbackSampleResponse> findFeedback(AgentUserContext context, String feedbackId) {
@@ -373,6 +560,14 @@ public class FeedbackLearningService {
                 rs.getInt("expected_top_k"),
                 rs.getString("rag_query"),
                 rs.getString("status"),
+                splitLines(rs.getString("feedback_tags")),
+                rs.getString("annotation_note"),
+                rs.getString("review_status"),
+                rs.getString("reviewer_id"),
+                rs.getString("review_comment"),
+                instantOrNull(rs.getTimestamp("reviewed_at")),
+                rs.getString("annotated_by"),
+                instantOrNull(rs.getTimestamp("annotated_at")),
                 rs.getString("eval_case_id"),
                 rs.getString("rag_experiment_id"),
                 rs.getString("created_by"),
@@ -435,6 +630,17 @@ public class FeedbackLearningService {
         return "CITATION_WEAK".equalsIgnoreCase(reason) ? "RAG" : "AGENT";
     }
 
+    private String normalizeReviewStatus(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("reviewStatus 不能为空");
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        if (!List.of("UNREVIEWED", "REVIEWING", "APPROVED", "REJECTED").contains(normalized)) {
+            throw new IllegalArgumentException("reviewStatus 只能是 UNREVIEWED、REVIEWING、APPROVED 或 REJECTED");
+        }
+        return normalized;
+    }
+
     private String resolveEndpoint(String requestValue, String evalType) {
         if (requestValue != null && !requestValue.isBlank()) {
             return requestValue.trim();
@@ -458,6 +664,67 @@ public class FeedbackLearningService {
         return new ArrayList<>(values);
     }
 
+    private List<String> defaultFeedbackTags(String reason) {
+        if ("CITATION_WEAK".equalsIgnoreCase(reason)) {
+            return List.of("RAG_QUALITY");
+        }
+        if ("BUSINESS_DATA_MISSING".equalsIgnoreCase(reason)) {
+            return List.of("TOOL_OR_DATA");
+        }
+        if ("ACTION_RISK".equalsIgnoreCase(reason)) {
+            return List.of("ACTION_SAFETY");
+        }
+        return List.of("ANSWER_QUALITY");
+    }
+
+    private long count(String sql, Object... args) {
+        Long value = jdbcTemplate.queryForObject(sql, Long.class, args);
+        return value == null ? 0 : value;
+    }
+
+    private List<MetricCount> groupCounts(String sql, Object... args) {
+        return jdbcTemplate.query(sql, (rs, rowNum) ->
+                new MetricCount(rs.getString("name"), rs.getLong("metric_count")), args);
+    }
+
+    private List<MetricCount> tagCounts(String tenantId) {
+        List<String> rows = jdbcTemplate.query("""
+                        SELECT feedback_tags
+                        FROM ai_eval_case_candidate
+                        WHERE tenant_id = ? AND feedback_tags IS NOT NULL
+                        """,
+                (rs, rowNum) -> rs.getString("feedback_tags"),
+                tenantId);
+        Map<String, Long> counts = new java.util.LinkedHashMap<>();
+        for (String row : rows) {
+            for (String tag : splitLines(row)) {
+                counts.merge(tag, 1L, Long::sum);
+            }
+        }
+        return counts.entrySet().stream()
+                .sorted((left, right) -> Long.compare(right.getValue(), left.getValue()))
+                .map(entry -> new MetricCount(entry.getKey(), entry.getValue()))
+                .toList();
+    }
+
+    private long sumCounts(List<MetricCount> rows) {
+        return rows.stream().mapToLong(MetricCount::count).sum();
+    }
+
+    private long countByName(List<MetricCount> rows, String name) {
+        return rows.stream()
+                .filter(row -> name.equals(row.name()))
+                .mapToLong(MetricCount::count)
+                .sum();
+    }
+
+    private double rate(long numerator, long denominator) {
+        if (denominator <= 0) {
+            return 0.0;
+        }
+        return Math.round((numerator * 1.0 / denominator) * 10000.0) / 10000.0;
+    }
+
     private <T> List<T> readJsonList(String json, TypeReference<List<T>> typeReference) {
         if (json == null || json.isBlank()) {
             return List.of();
@@ -474,6 +741,10 @@ public class FeedbackLearningService {
             return List.of();
         }
         return value.lines().map(String::trim).filter(line -> !line.isBlank()).toList();
+    }
+
+    private Instant instantOrNull(Timestamp value) {
+        return value == null ? null : value.toInstant();
     }
 
     private List<String> overrideOrDefault(List<String> requested, List<String> defaults) {

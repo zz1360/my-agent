@@ -44,12 +44,17 @@ class LogisticsAgentApplicationTests {
                 .contains("物流 Agent 管理台")
                 .contains("执行指标")
                 .contains("失败重试队列")
+                .contains("反馈质量看板")
                 .contains("反馈样本池")
                 .contains("评测候选")
                 .contains("业务回链")
                 .contains("/api/agent/actions/executions/metrics")
                 .contains("/api/agent/feedback")
-                .contains("/api/agent/eval-candidates");
+                .contains("/api/agent/feedback/quality-metrics")
+                .contains("/api/agent/eval-candidates")
+                .contains("candidate-annotate-save")
+                .contains("/annotate")
+                .contains("/review");
     }
 
     @Test
@@ -115,9 +120,14 @@ class LogisticsAgentApplicationTests {
         assertThat(conversations).isNotNull();
         assertThat(messages).isNotNull();
         assertThat(feedback).isNotNull();
-        assertThat(migrations).isGreaterThanOrEqualTo(10);
+        assertThat(migrations).isGreaterThanOrEqualTo(11);
         Integer candidates = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_case_candidate", Integer.class);
         assertThat(candidates).isNotNull();
+        Integer annotatedCandidates = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'ai_eval_case_candidate' AND COLUMN_NAME = 'review_status'
+                """, Integer.class);
+        assertThat(annotatedCandidates).isEqualTo(1);
     }
 
     @Test
@@ -308,6 +318,68 @@ class LogisticsAgentApplicationTests {
         assertThat(candidate.get("evalType").asText()).isEqualTo("RAG");
         assertThat(candidate.get("expectedRagDocIds")).isNotEmpty();
         assertThat(candidate.get("ragQuery").asText()).contains("客户 C001");
+        assertThat(candidate.get("reviewStatus").asText()).isEqualTo("UNREVIEWED");
+        assertThat(candidate.get("feedbackTags")).anySatisfy(tag ->
+                assertThat(tag.asText()).isEqualTo("RAG_QUALITY"));
+
+        mockMvc.perform(post("/api/agent/eval-candidates/{candidateId}/promote", candidateId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"],
+                                  "enabled": true
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        String annotateBody = mockMvc.perform(post("/api/agent/eval-candidates/{candidateId}/annotate", candidateId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"],
+                                  "evalType": "RAG",
+                                  "expectedContains": ["C001", "高风险"],
+                                  "expectedCitations": ["rule-customer-risk"],
+                                  "expectedRagDocIds": ["rule-customer-risk"],
+                                  "expectedRagChunkIds": ["rule-customer-risk-chunk-001"],
+                                  "expectedTopK": 5,
+                                  "ragQuery": "客户风险等级判定规则 高风险",
+                                  "feedbackTags": ["RAG_QUALITY", "POLICY_GAP"],
+                                  "annotationNote": "人工确认问题来自引用覆盖，需要优先验证客户风险制度命中。"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode annotated = objectMapper.readTree(annotateBody);
+        assertThat(annotated.get("feedbackTags")).anySatisfy(tag ->
+                assertThat(tag.asText()).isEqualTo("POLICY_GAP"));
+        assertThat(annotated.get("annotationNote").asText()).contains("人工确认");
+        assertThat(annotated.get("annotatedBy").asText()).isEqualTo("admin-console");
+
+        String reviewBody = mockMvc.perform(post("/api/agent/eval-candidates/{candidateId}/review", candidateId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"],
+                                  "reviewStatus": "APPROVED",
+                                  "comment": "标注完整，可进入回归评测。"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode reviewedCandidate = objectMapper.readTree(reviewBody);
+        assertThat(reviewedCandidate.get("reviewStatus").asText()).isEqualTo("APPROVED");
+        assertThat(reviewedCandidate.get("reviewerId").asText()).isEqualTo("admin-console");
 
         String ragExperimentBody = mockMvc.perform(post("/api/agent/eval-candidates/{candidateId}/rag-experiment", candidateId)
                         .param("tenantId", "T001")
@@ -330,7 +402,7 @@ class LogisticsAgentApplicationTests {
                                   "tenantId": "T001",
                                   "userId": "admin-console",
                                   "roles": ["OPS_MANAGER"],
-                                  "enabled": false
+                                  "enabled": true
                                 }
                                 """))
                 .andExpect(status().isOk())
@@ -353,7 +425,31 @@ class LogisticsAgentApplicationTests {
         assertThat(evalCases).anySatisfy(row -> {
             assertThat(row.get("caseId").asText()).isEqualTo(evalCaseId);
             assertThat(row.get("evalType").asText()).isEqualTo("RAG");
-            assertThat(row.get("enabled").asBoolean()).isFalse();
+            assertThat(row.get("enabled").asBoolean()).isTrue();
+            assertThat(row.get("expectedRagDocIds")).anySatisfy(doc ->
+                    assertThat(doc.asText()).isEqualTo("rule-customer-risk"));
+        });
+
+        String metricsBody = mockMvc.perform(get("/api/agent/feedback/quality-metrics")
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode metrics = objectMapper.readTree(metricsBody);
+        assertThat(metrics.get("notHelpfulFeedback").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(metrics.get("candidateCount").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(metrics.get("approvedCandidates").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(metrics.get("candidateConversionRate").asDouble()).isGreaterThan(0);
+        assertThat(metrics.get("byTag")).anySatisfy(tag -> {
+            assertThat(tag.get("name").asText()).isEqualTo("POLICY_GAP");
+            assertThat(tag.get("count").asLong()).isGreaterThanOrEqualTo(1);
+        });
+        assertThat(metrics.get("byReviewStatus")).anySatisfy(statusRow -> {
+            assertThat(statusRow.get("name").asText()).isEqualTo("APPROVED");
+            assertThat(statusRow.get("count").asLong()).isGreaterThanOrEqualTo(1);
         });
     }
 

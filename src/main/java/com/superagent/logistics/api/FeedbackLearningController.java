@@ -1,9 +1,12 @@
 package com.superagent.logistics.api;
 
 import com.superagent.logistics.api.dto.AgentFeedbackSampleResponse;
+import com.superagent.logistics.api.dto.EvalCaseCandidateAnnotateRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidateCreateRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidatePromoteRequest;
+import com.superagent.logistics.api.dto.EvalCaseCandidateReviewRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidateResponse;
+import com.superagent.logistics.api.dto.FeedbackQualityMetricsResponse;
 import com.superagent.logistics.api.dto.FeedbackRagExperimentResponse;
 import com.superagent.logistics.eval.FeedbackLearningService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -46,6 +49,13 @@ public class FeedbackLearningController {
         return feedbackLearningService.listCandidates(tenantId, userId, roles, status, limit);
     }
 
+    @GetMapping("/feedback/quality-metrics")
+    public FeedbackQualityMetricsResponse qualityMetrics(@RequestParam(required = false) String tenantId,
+                                                         @RequestParam(required = false) String userId,
+                                                         @RequestParam(required = false) List<String> roles) {
+        return feedbackLearningService.qualityMetrics(tenantId, userId, roles);
+    }
+
     @PostMapping("/feedback/{feedbackId}/eval-candidate")
     public EvalCaseCandidateResponse createCandidate(@PathVariable String feedbackId,
                                                      @RequestBody EvalCaseCandidateCreateRequest request) {
@@ -56,6 +66,18 @@ public class FeedbackLearningController {
     public EvalCaseCandidateResponse promoteCandidate(@PathVariable String candidateId,
                                                       @RequestBody EvalCaseCandidatePromoteRequest request) {
         return feedbackLearningService.promoteToEvalCase(candidateId, request);
+    }
+
+    @PostMapping("/eval-candidates/{candidateId}/annotate")
+    public EvalCaseCandidateResponse annotateCandidate(@PathVariable String candidateId,
+                                                       @RequestBody EvalCaseCandidateAnnotateRequest request) {
+        return feedbackLearningService.annotateCandidate(candidateId, request);
+    }
+
+    @PostMapping("/eval-candidates/{candidateId}/review")
+    public EvalCaseCandidateResponse reviewCandidate(@PathVariable String candidateId,
+                                                     @RequestBody EvalCaseCandidateReviewRequest request) {
+        return feedbackLearningService.reviewCandidate(candidateId, request);
     }
 
     @PostMapping("/eval-candidates/{candidateId}/rag-experiment")
