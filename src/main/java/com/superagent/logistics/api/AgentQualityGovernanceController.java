@@ -6,7 +6,10 @@ import com.superagent.logistics.api.dto.QualityAlertEvaluationResponse;
 import com.superagent.logistics.api.dto.QualityAlertResponse;
 import com.superagent.logistics.api.dto.QualityAlertRuleUpsertRequest;
 import com.superagent.logistics.api.dto.QualityAlertRuleResponse;
+import com.superagent.logistics.api.dto.QualityAlertTaskDetailResponse;
 import com.superagent.logistics.api.dto.QualityAlertTaskResponse;
+import com.superagent.logistics.api.dto.QualityAlertTaskUpdateRequest;
+import com.superagent.logistics.api.dto.QualityTrendResponse;
 import com.superagent.logistics.eval.AgentQualityGovernanceService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -78,5 +82,29 @@ public class AgentQualityGovernanceController {
                                                     @RequestParam(required = false) String userId,
                                                     @RequestParam(required = false) List<String> roles) {
         return qualityGovernanceService.createAlertTask(alertId, tenantId, userId, roles);
+    }
+
+    @GetMapping("/alert-tasks")
+    public List<QualityAlertTaskDetailResponse> alertTasks(@RequestParam(required = false) String tenantId,
+                                                           @RequestParam(required = false) String userId,
+                                                           @RequestParam(required = false) List<String> roles,
+                                                           @RequestParam(required = false) String status,
+                                                           @RequestParam(defaultValue = "30") int limit) {
+        return qualityGovernanceService.listAlertTasks(tenantId, userId, roles, status, limit);
+    }
+
+    @PostMapping("/alert-tasks/{taskId}/transition")
+    public QualityAlertTaskDetailResponse transitionAlertTask(@PathVariable String taskId,
+                                                              @RequestBody QualityAlertTaskUpdateRequest request) {
+        return qualityGovernanceService.transitionAlertTask(taskId, request);
+    }
+
+    @GetMapping("/trends")
+    public QualityTrendResponse qualityTrends(@RequestParam(required = false) String tenantId,
+                                              @RequestParam(required = false) String userId,
+                                              @RequestParam(required = false) List<String> roles,
+                                              @RequestParam(required = false) LocalDate from,
+                                              @RequestParam(required = false) LocalDate to) {
+        return qualityGovernanceService.qualityTrends(tenantId, userId, roles, from, to);
     }
 }

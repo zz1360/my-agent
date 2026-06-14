@@ -11,8 +11,11 @@ import com.superagent.logistics.api.dto.CustomerDiagnosisResponse;
 import com.superagent.logistics.api.dto.EvalCaseResponse;
 import com.superagent.logistics.api.dto.EvalCaseResultResponse;
 import com.superagent.logistics.api.dto.EvalRunResponse;
+import com.superagent.logistics.api.dto.EvalRunComparisonResponse;
+import com.superagent.logistics.api.dto.EvalRunComparisonResponse.EvalCaseComparison;
 import com.superagent.logistics.api.dto.EvalSuiteResponse;
 import com.superagent.logistics.api.dto.ToolCallSummary;
+import com.superagent.logistics.knowledge.KnowledgeSearchOptions;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
 import com.superagent.logistics.security.AgentUserContext;
@@ -29,6 +32,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -207,6 +211,81 @@ public class AgentEvalService implements ApplicationRunner {
                 .orElseThrow(() -> new IllegalArgumentException("未找到评测运行：" + runId));
     }
 
+    public List<EvalRunResponse> listRuns(String tenantId, int limit) {
+        String resolvedTenant = resolveTenant(tenantId);
+        return jdbcTemplate.query("""
+                SELECT * FROM ai_eval_run
+                WHERE tenant_id = ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """, (rs, rowNum) -> {
+                    String runId = rs.getString("run_id");
+                    return mapRun(rs, findResults(runId));
+                }, resolvedTenant, Math.max(1, Math.min(limit, 50)));
+    }
+
+    public EvalRunComparisonResponse compareRuns(String baselineRunId, String candidateRunId) {
+        EvalRunResponse baseline = findRun(baselineRunId);
+        EvalRunResponse candidate = findRun(candidateRunId);
+        Map<String, EvalCaseResultResponse> baselineResults = indexResults(baseline.results());
+        Map<String, EvalCaseResultResponse> candidateResults = indexResults(candidate.results());
+        Set<String> caseIds = new LinkedHashSet<>();
+        caseIds.addAll(baselineResults.keySet());
+        caseIds.addAll(candidateResults.keySet());
+
+        List<EvalCaseComparison> comparisons = new ArrayList<>();
+        int unchanged = 0;
+        int improved = 0;
+        int regressed = 0;
+        int newCases = 0;
+        int removedCases = 0;
+        for (String caseId : caseIds) {
+            EvalCaseResultResponse left = baselineResults.get(caseId);
+            EvalCaseResultResponse right = candidateResults.get(caseId);
+            String changeType;
+            if (left == null) {
+                changeType = "NEW";
+                newCases++;
+            } else if (right == null) {
+                changeType = "REMOVED";
+                removedCases++;
+            } else if (left.passed() && !right.passed()) {
+                changeType = "REGRESSED";
+                regressed++;
+            } else if (!left.passed() && right.passed()) {
+                changeType = "IMPROVED";
+                improved++;
+            } else {
+                changeType = "UNCHANGED";
+                unchanged++;
+            }
+            comparisons.add(new EvalCaseComparison(
+                    caseId,
+                    changeType,
+                    left == null ? null : left.passed(),
+                    right == null ? null : right.passed(),
+                    left == null ? null : left.failureReason(),
+                    right == null ? null : right.failureReason(),
+                    left == null ? null : left.ragRecallAtK(),
+                    right == null ? null : right.ragRecallAtK(),
+                    latencyDelta(left, right)
+            ));
+        }
+        return new EvalRunComparisonResponse(
+                baseline.runId(),
+                candidate.runId(),
+                versionLabel(baseline),
+                versionLabel(candidate),
+                comparisons.size(),
+                unchanged,
+                improved,
+                regressed,
+                newCases,
+                removedCases,
+                comparisons
+        );
+    }
+
     private EvalSuiteResponse findSuite(String tenantId, String suiteId) {
         return jdbcTemplate.query("""
                         SELECT s.*, COUNT(sc.case_id) AS case_count
@@ -253,7 +332,9 @@ public class AgentEvalService implements ApplicationRunner {
         String query = evalCase.ragQuery() == null || evalCase.ragQuery().isBlank() ? request.query() : evalCase.ragQuery();
         int topK = evalCase.expectedTopK() <= 0 ? Math.max(1, request.topK()) : evalCase.expectedTopK();
         AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
-        List<KnowledgeSearchResult> results = knowledgeSearchService.search(context, query, topK);
+        String retrievalMode = KnowledgeSearchOptions.normalizeMode(request.mode());
+        List<KnowledgeSearchResult> results = knowledgeSearchService.search(context, query, topK,
+                KnowledgeSearchOptions.fromMode(retrievalMode));
         List<String> docIds = distinct(results.stream().map(result -> result.chunk().docId()).toList());
         List<String> chunkIds = distinct(results.stream().map(result -> result.chunk().chunkId()).toList());
         List<String> failures = new ArrayList<>();
@@ -270,17 +351,18 @@ public class AgentEvalService implements ApplicationRunner {
             }
         }
         RagMetrics ragMetrics = calculateRagMetrics(results, expectedDocs, expectedChunks, topK);
-        String metrics = objectMapper.writeValueAsString(Map.of(
-                "query", query,
-                "topK", topK,
-                "hitRate", ragMetrics.recallAtK(),
-                "recallAtK", ragMetrics.recallAtK(),
-                "precisionAtK", ragMetrics.precisionAtK(),
-                "mrr", ragMetrics.mrr(),
-                "ndcg", ragMetrics.ndcg(),
-                "expectedTotal", ragMetrics.expectedTotal(),
-                "hitCount", ragMetrics.hitCount(),
-                "scores", results.stream().map(result -> Map.of(
+        Map<String, Object> metricsPayload = new LinkedHashMap<>();
+        metricsPayload.put("query", query);
+        metricsPayload.put("mode", retrievalMode);
+        metricsPayload.put("topK", topK);
+        metricsPayload.put("hitRate", ragMetrics.recallAtK());
+        metricsPayload.put("recallAtK", ragMetrics.recallAtK());
+        metricsPayload.put("precisionAtK", ragMetrics.precisionAtK());
+        metricsPayload.put("mrr", ragMetrics.mrr());
+        metricsPayload.put("ndcg", ragMetrics.ndcg());
+        metricsPayload.put("expectedTotal", ragMetrics.expectedTotal());
+        metricsPayload.put("hitCount", ragMetrics.hitCount());
+        metricsPayload.put("scores", results.stream().map(result -> Map.of(
                         "docId", result.chunk().docId(),
                         "chunkId", result.chunk().chunkId(),
                         "score", result.score(),
@@ -289,8 +371,8 @@ public class AgentEvalService implements ApplicationRunner {
                         "ruleScore", result.ruleScore(),
                         "rerankerScore", result.rerankerScore() == null ? "" : result.rerankerScore(),
                         "rerankerProvider", result.rerankerProvider()
-                )).toList()
-        ));
+                )).toList());
+        String metrics = objectMapper.writeValueAsString(metricsPayload);
         long latencyMs = (System.nanoTime() - start) / 1_000_000;
         return new EvalCaseResultResponse(evalCase.caseId(), failures.isEmpty(), null, null, latencyMs,
                 String.join("；", failures), excerpt(results.isEmpty() ? "" : results.get(0).chunk().content(), 500),
@@ -332,6 +414,28 @@ public class AgentEvalService implements ApplicationRunner {
                 WHERE run_id = ?
                 ORDER BY id
                 """, this::mapResult, runId);
+    }
+
+    private Map<String, EvalCaseResultResponse> indexResults(List<EvalCaseResultResponse> results) {
+        Map<String, EvalCaseResultResponse> indexed = new java.util.LinkedHashMap<>();
+        for (EvalCaseResultResponse result : results == null ? List.<EvalCaseResultResponse>of() : results) {
+            indexed.put(result.caseId(), result);
+        }
+        return indexed;
+    }
+
+    private Long latencyDelta(EvalCaseResultResponse baseline, EvalCaseResultResponse candidate) {
+        if (baseline == null || candidate == null) {
+            return null;
+        }
+        return candidate.latencyMs() - baseline.latencyMs();
+    }
+
+    private String versionLabel(EvalRunResponse run) {
+        return "%s / %s / %s".formatted(
+                defaultVersion(run.modelVersion(), "model-current"),
+                defaultVersion(run.knowledgeVersion(), "knowledge-current"),
+                defaultVersion(run.promptVersion(), "prompt-current"));
     }
 
     private void seedDefaultCases() {
@@ -402,8 +506,8 @@ public class AgentEvalService implements ApplicationRunner {
 
     private void seedDefaultSuites() {
         Instant now = Instant.now();
-        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v1.8",
-                "覆盖核心问答、客户诊断、提示词注入、RAG 检索质量与质量治理闭环的默认回归套件。", now);
+        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v1.9",
+                "覆盖核心问答、客户诊断、提示词注入、RAG 检索质量、质量治理闭环、告警任务流转与评测版本对比的默认回归套件。", now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-delay-compensation", 10, now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-customer-diagnosis", 20, now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-prompt-injection", 30, now);
@@ -724,7 +828,8 @@ public class AgentEvalService implements ApplicationRunner {
             String userId,
             List<String> roles,
             String query,
-            int topK
+            int topK,
+            String mode
     ) {
     }
 

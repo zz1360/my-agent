@@ -183,13 +183,7 @@ public class RagExperimentService implements ApplicationRunner {
     }
 
     private KnowledgeSearchOptions options(String mode) {
-        return switch (mode) {
-            case "KEYWORD_ONLY" -> KnowledgeSearchOptions.keywordOnly();
-            case "VECTOR_ONLY" -> KnowledgeSearchOptions.vectorOnly();
-            case "HYBRID_RULE" -> KnowledgeSearchOptions.hybridWithoutReranker();
-            case "HYBRID_RERANKER" -> KnowledgeSearchOptions.hybridWithReranker();
-            default -> throw new IllegalArgumentException("不支持的 RAG 实验模式：" + mode);
-        };
+        return KnowledgeSearchOptions.fromMode(mode);
     }
 
     private RagMetrics calculateMetrics(List<KnowledgeSearchResult> results, List<String> expectedDocs,
@@ -318,7 +312,7 @@ public class RagExperimentService implements ApplicationRunner {
     private List<String> resolveModes(List<String> modes) {
         List<String> values = modes == null || modes.isEmpty() ? DEFAULT_MODES : modes;
         return values.stream()
-                .map(mode -> mode == null ? "" : mode.trim().toUpperCase(Locale.ROOT))
+                .map(KnowledgeSearchOptions::normalizeMode)
                 .filter(mode -> !mode.isBlank())
                 .peek(this::options)
                 .distinct()

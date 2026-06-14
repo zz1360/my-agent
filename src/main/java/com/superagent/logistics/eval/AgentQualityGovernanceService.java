@@ -8,7 +8,12 @@ import com.superagent.logistics.api.dto.QualityAlertEvaluationResponse;
 import com.superagent.logistics.api.dto.QualityAlertResponse;
 import com.superagent.logistics.api.dto.QualityAlertRuleUpsertRequest;
 import com.superagent.logistics.api.dto.QualityAlertRuleResponse;
+import com.superagent.logistics.api.dto.QualityAlertTaskDetailResponse;
 import com.superagent.logistics.api.dto.QualityAlertTaskResponse;
+import com.superagent.logistics.api.dto.QualityAlertTaskUpdateRequest;
+import com.superagent.logistics.api.dto.QualityTrendResponse;
+import com.superagent.logistics.api.dto.QualityTrendResponse.DailyQualityPoint;
+import com.superagent.logistics.api.dto.QualityTrendResponse.MetricCount;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
@@ -21,6 +26,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +41,8 @@ public class AgentQualityGovernanceService {
 
     private static final Set<String> SUPPORTED_METRICS = Set.of("NEGATIVE_RATE", "REVIEW_BACKLOG", "RAG_FAILURE_RATE");
     private static final Set<String> SUPPORTED_SEVERITIES = Set.of("INFO", "WARN", "ERROR");
+    private static final Set<String> SUPPORTED_TASK_STATUSES = Set.of("OPEN", "PROCESSING", "RESOLVED", "REJECTED");
+    private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -286,8 +295,9 @@ public class AgentQualityGovernanceService {
         jdbcTemplate.update("""
                         INSERT INTO logistics_ops_task
                         (tenant_id, task_id, action_id, customer_id, title, description,
-                         owner_role, status, created_by, created_at, completed_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         owner_role, status, created_by, created_at, completed_at, owner_user_id,
+                         last_comment, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 context.tenantId(),
                 taskId,
@@ -299,7 +309,10 @@ public class AgentQualityGovernanceService {
                 "OPEN",
                 context.userId(),
                 Timestamp.from(now),
-                null);
+                null,
+                null,
+                "由质量告警生成，等待运营复核。",
+                Timestamp.from(now));
         jdbcTemplate.update("""
                         UPDATE ai_quality_alert
                         SET task_id = ?, task_created_at = ?
@@ -310,6 +323,121 @@ public class AgentQualityGovernanceService {
                 context.tenantId(),
                 alert.alertId());
         return new QualityAlertTaskResponse(alert.alertId(), taskId, actionId, "OPEN", now);
+    }
+
+    public List<QualityAlertTaskDetailResponse> listAlertTasks(String tenantId, String userId, List<String> roles,
+                                                               String status, int limit) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        permissionService.checkBusinessReadable(context);
+        checkQualityMaintainer(context);
+        StringBuilder sql = new StringBuilder("""
+                SELECT *
+                FROM logistics_ops_task
+                WHERE tenant_id = ? AND action_id LIKE 'quality-alert-%'
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(context.tenantId());
+        if (status != null && !status.isBlank()) {
+            sql.append(" AND status = ?");
+            args.add(normalizeTaskStatus(status));
+        }
+        sql.append(" ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?");
+        args.add(Math.max(1, Math.min(limit, 100)));
+        return jdbcTemplate.query(sql.toString(), this::mapAlertTask, args.toArray());
+    }
+
+    public QualityAlertTaskDetailResponse transitionAlertTask(String taskId, QualityAlertTaskUpdateRequest request) {
+        AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        permissionService.checkBusinessReadable(context);
+        checkQualityMaintainer(context);
+        QualityAlertTaskDetailResponse current = findAlertTask(context.tenantId(), taskId);
+        String nextStatus = normalizeTaskStatus(request.status());
+        String ownerUserId = firstNotBlank(request.ownerUserId(), current.ownerUserId());
+        String comment = firstNotBlank(request.comment(), current.lastComment());
+        Instant now = Instant.now();
+        Timestamp completedAt = ("RESOLVED".equals(nextStatus) || "REJECTED".equals(nextStatus))
+                ? Timestamp.from(now)
+                : null;
+        jdbcTemplate.update("""
+                        UPDATE logistics_ops_task
+                        SET status = ?, owner_user_id = ?, last_comment = ?, updated_at = ?, completed_at = ?
+                        WHERE tenant_id = ? AND task_id = ?
+                        """,
+                nextStatus,
+                ownerUserId,
+                comment,
+                Timestamp.from(now),
+                completedAt,
+                context.tenantId(),
+                current.taskId());
+        if ("RESOLVED".equals(nextStatus) || "REJECTED".equals(nextStatus)) {
+            jdbcTemplate.update("""
+                            UPDATE ai_quality_alert
+                            SET status = 'RESOLVED', resolved_at = ?
+                            WHERE tenant_id = ? AND alert_id = ?
+                            """,
+                    Timestamp.from(now),
+                    context.tenantId(),
+                    current.alertId());
+        }
+        return findAlertTask(context.tenantId(), current.taskId());
+    }
+
+    public QualityTrendResponse qualityTrends(String tenantId, String userId, List<String> roles,
+                                              LocalDate fromDate, LocalDate toDate) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        permissionService.checkBusinessReadable(context);
+        checkQualityMaintainer(context);
+        DateRange range = resolveDateRange(fromDate, toDate);
+        List<DailyQualityPoint> points = new ArrayList<>();
+        LocalDate cursor = range.fromDate();
+        while (!cursor.isAfter(range.toDate())) {
+            Instant start = cursor.atStartOfDay(DEFAULT_ZONE).toInstant();
+            Instant end = cursor.plusDays(1).atStartOfDay(DEFAULT_ZONE).toInstant();
+            Timestamp startTs = Timestamp.from(start);
+            Timestamp endTs = Timestamp.from(end);
+            points.add(new DailyQualityPoint(
+                    cursor,
+                    count("""
+                            SELECT COUNT(*) FROM ai_quality_alert
+                            WHERE tenant_id = ? AND first_triggered_at >= ? AND first_triggered_at < ?
+                            """, context.tenantId(), startTs, endTs),
+                    count("""
+                            SELECT COUNT(*) FROM ai_quality_alert
+                            WHERE tenant_id = ? AND resolved_at >= ? AND resolved_at < ?
+                            """, context.tenantId(), startTs, endTs),
+                    count("""
+                            SELECT COUNT(*) FROM logistics_ops_task
+                            WHERE tenant_id = ? AND action_id LIKE 'quality-alert-%'
+                              AND created_at >= ? AND created_at < ?
+                            """, context.tenantId(), startTs, endTs),
+                    count("""
+                            SELECT COUNT(*) FROM logistics_ops_task
+                            WHERE tenant_id = ? AND action_id LIKE 'quality-alert-%'
+                              AND completed_at >= ? AND completed_at < ?
+                            """, context.tenantId(), startTs, endTs)
+            ));
+            cursor = cursor.plusDays(1);
+        }
+        return new QualityTrendResponse(
+                range.fromDate(),
+                range.toDate(),
+                points,
+                metricCounts("""
+                        SELECT status AS name, COUNT(*) AS metric_count
+                        FROM ai_quality_alert
+                        WHERE tenant_id = ?
+                        GROUP BY status
+                        ORDER BY metric_count DESC
+                        """, context.tenantId()),
+                metricCounts("""
+                        SELECT status AS name, COUNT(*) AS metric_count
+                        FROM logistics_ops_task
+                        WHERE tenant_id = ? AND action_id LIKE 'quality-alert-%'
+                        GROUP BY status
+                        ORDER BY metric_count DESC
+                        """, context.tenantId())
+        );
     }
 
     private MetricSnapshot metricSnapshot(String tenantId, QualityAlertRuleResponse rule) {
@@ -468,6 +596,18 @@ public class AgentQualityGovernanceService {
                 .orElseThrow(() -> new IllegalArgumentException("未找到质量告警：" + alertId));
     }
 
+    private QualityAlertTaskDetailResponse findAlertTask(String tenantId, String taskId) {
+        return jdbcTemplate.query("""
+                        SELECT *
+                        FROM logistics_ops_task
+                        WHERE tenant_id = ? AND task_id = ? AND action_id LIKE 'quality-alert-%'
+                        """,
+                this::mapAlertTask,
+                tenantId,
+                taskId).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("未找到质量告警任务：" + taskId));
+    }
+
     private FeedbackTagResponse mapFeedbackTag(ResultSet rs, int rowNum) throws SQLException {
         return new FeedbackTagResponse(
                 rs.getString("tag_code"),
@@ -516,6 +656,26 @@ public class AgentQualityGovernanceService {
         );
     }
 
+    private QualityAlertTaskDetailResponse mapAlertTask(ResultSet rs, int rowNum) throws SQLException {
+        Timestamp updatedAt = rs.getTimestamp("updated_at");
+        Timestamp completedAt = rs.getTimestamp("completed_at");
+        return new QualityAlertTaskDetailResponse(
+                alertIdFromActionId(rs.getString("action_id")),
+                rs.getString("task_id"),
+                rs.getString("action_id"),
+                rs.getString("title"),
+                rs.getString("description"),
+                rs.getString("owner_role"),
+                rs.getString("owner_user_id"),
+                rs.getString("status"),
+                rs.getString("last_comment"),
+                rs.getString("created_by"),
+                rs.getTimestamp("created_at").toInstant(),
+                updatedAt == null ? rs.getTimestamp("created_at").toInstant() : updatedAt.toInstant(),
+                completedAt == null ? null : completedAt.toInstant()
+        );
+    }
+
     private void checkQualityMaintainer(AgentUserContext context) {
         if (!context.hasAnyRole("ADMIN", "OPS_MANAGER", "OPERATIONS")) {
             throw new AccessDeniedException("当前用户没有质量治理权限");
@@ -525,6 +685,11 @@ public class AgentQualityGovernanceService {
     private long count(String sql, Object... args) {
         Long value = jdbcTemplate.queryForObject(sql, Long.class, args);
         return value == null ? 0 : value;
+    }
+
+    private List<MetricCount> metricCounts(String sql, Object... args) {
+        return jdbcTemplate.query(sql, (rs, rowNum) ->
+                new MetricCount(rs.getString("name"), rs.getLong("metric_count")), args);
     }
 
     private BigDecimal ratio(long numerator, long denominator) {
@@ -574,6 +739,13 @@ public class AgentQualityGovernanceService {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
+    private String firstNotBlank(String first, String fallback) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        return blankToNull(fallback);
+    }
+
     private String truncate(String value, int maxLength) {
         if (value == null || value.length() <= maxLength) {
             return value;
@@ -581,6 +753,36 @@ public class AgentQualityGovernanceService {
         return value.substring(0, maxLength);
     }
 
+    private String normalizeTaskStatus(String status) {
+        String value = required(status, "任务状态不能为空").toUpperCase(Locale.ROOT);
+        if (!SUPPORTED_TASK_STATUSES.contains(value)) {
+            throw new IllegalArgumentException("暂不支持的任务状态：" + value);
+        }
+        return value;
+    }
+
+    private String alertIdFromActionId(String actionId) {
+        if (actionId == null || !actionId.startsWith("quality-alert-")) {
+            return "";
+        }
+        return actionId.substring("quality-alert-".length());
+    }
+
+    private DateRange resolveDateRange(LocalDate fromDate, LocalDate toDate) {
+        LocalDate end = toDate == null ? LocalDate.now(DEFAULT_ZONE) : toDate;
+        LocalDate start = fromDate == null ? end.minusDays(13) : fromDate;
+        if (start.isAfter(end)) {
+            throw new IllegalArgumentException("开始日期不能晚于结束日期");
+        }
+        if (start.plusDays(60).isBefore(end)) {
+            throw new IllegalArgumentException("趋势查询最多支持 61 天");
+        }
+        return new DateRange(start, end);
+    }
+
     private record MetricSnapshot(BigDecimal value, String summary, String detailJson) {
+    }
+
+    private record DateRange(LocalDate fromDate, LocalDate toDate) {
     }
 }

@@ -508,6 +508,37 @@
       background: var(--amber);
     }
 
+    .quality-chart {
+      min-height: 150px;
+      padding: 12px 14px 4px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .quality-chart svg {
+      display: block;
+      width: 100%;
+      height: 132px;
+    }
+
+    .quality-chart text {
+      fill: var(--muted);
+      font-size: 11px;
+    }
+
+    .chart-line {
+      fill: none;
+      stroke: var(--brand);
+      stroke-width: 2;
+    }
+
+    .chart-line.warn {
+      stroke: var(--amber);
+    }
+
+    .chart-line.info {
+      stroke: var(--blue);
+    }
+
     .bar-row {
       display: grid;
       grid-template-columns: 116px minmax(0, 1fr) 52px;
@@ -943,6 +974,47 @@
           <div class="mini-bars" id="qualityAlertRuleRows"></div>
         </section>
 
+        <section class="panel" aria-labelledby="qualityTaskTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="qualityTaskTitle">告警任务流转</h2>
+              <p>跟进质量告警生成的运营任务处理状态</p>
+            </div>
+            <span class="chip info" id="alertTaskCount">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>负责人</th>
+                  <th>状态</th>
+                  <th>备注</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="alertTaskBody">
+                <tr><td class="state" colspan="5">正在加载告警任务</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="qualityGovernanceTrendTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="qualityGovernanceTrendTitle">治理趋势图</h2>
+              <p id="qualityGovernanceTrendRange">按天观察告警打开、告警恢复和任务处理</p>
+            </div>
+          </div>
+          <div class="quality-chart" id="qualityGovernanceTrendChart">
+            <div class="state">正在加载治理趋势</div>
+          </div>
+          <div class="trend-list" id="qualityGovernanceTrendRows">
+            <div class="state">正在加载治理趋势</div>
+          </div>
+        </section>
+
         <section class="panel" aria-labelledby="evalSuiteTitle">
           <div class="panel-head">
             <div class="panel-title">
@@ -958,11 +1030,11 @@
             </label>
             <label class="field">
               <span>知识库版本</span>
-              <input id="evalKnowledgeVersion" value="kb-v1.8" autocomplete="off">
+              <input id="evalKnowledgeVersion" value="kb-v1.9" autocomplete="off">
             </label>
             <label class="field">
               <span>提示词版本</span>
-              <input id="evalPromptVersion" value="prompt-v1.8" autocomplete="off">
+              <input id="evalPromptVersion" value="prompt-v1.9" autocomplete="off">
             </label>
           </div>
           <div class="table-wrap">
@@ -980,6 +1052,68 @@
                 <tr><td class="state" colspan="5">正在加载评测集</td></tr>
               </tbody>
             </table>
+          </div>
+          <div class="governance-form" aria-label="评测结果版本对比">
+            <label class="field">
+              <span>基线运行</span>
+              <input id="evalBaselineRunId" placeholder="baseline runId" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>候选运行</span>
+              <input id="evalCandidateRunId" placeholder="candidate runId" autocomplete="off">
+            </label>
+            <button class="button primary" type="button" data-role="eval-compare">对比评测</button>
+          </div>
+          <div class="detail" id="evalComparePanel">
+            <div class="state">选择两次评测运行后查看差异</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>运行</th>
+                  <th>版本</th>
+                  <th>结果</th>
+                  <th>时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="evalRunBody">
+                <tr><td class="state" colspan="5">正在加载评测运行</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="retrievalModeTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="retrievalModeTitle">检索模式灰度</h2>
+              <p>预览 keyword、vector、hybrid 和 reranker 模式的召回结果</p>
+            </div>
+          </div>
+          <div class="governance-form" aria-label="检索模式灰度入口">
+            <label class="field">
+              <span>检索问题</span>
+              <input id="retrievalQuery" value="冷链运输温度超过 10C 后客服应该怎么处理？" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>检索模式</span>
+              <select id="retrievalMode">
+                <option value="keyword">keyword</option>
+                <option value="vector">vector</option>
+                <option value="hybrid">hybrid</option>
+                <option value="hybrid_reranker" selected>hybrid_reranker</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>TopK</span>
+              <input id="retrievalTopK" type="number" min="1" max="20" value="5">
+            </label>
+            <button class="button primary" type="button" data-role="retrieval-preview">预览检索</button>
+          </div>
+          <div class="mini-bars" id="retrievalPreviewRows">
+            <div class="state">选择检索模式后预览召回片段</div>
           </div>
         </section>
 
@@ -1107,7 +1241,10 @@
       latestFeedbackTags: [],
       latestQualityAlerts: [],
       latestQualityAlertRules: [],
-      latestEvalSuites: []
+      latestAlertTasks: [],
+      latestQualityGovernanceTrend: null,
+      latestEvalSuites: [],
+      latestEvalRuns: []
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -1479,6 +1616,103 @@
       }
     }
 
+    async function loadAlertTasks() {
+      setLoading("#alertTaskBody", 5, "正在加载告警任务");
+      const rows = await api(`/api/agent/quality/alert-tasks?${params({ limit: 20 })}`);
+      state.latestAlertTasks = rows;
+      $("#alertTaskCount").textContent = `${rows.length} 条`;
+      if (!rows.length) {
+        $("#alertTaskBody").innerHTML = `<tr><td class="state" colspan="5">暂无告警任务</td></tr>`;
+        return;
+      }
+      $("#alertTaskBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>
+            <div class="cell-main">
+              <span class="strong">${escapeHtml(row.title || row.taskId)}</span>
+              <span class="mono muted">${escapeHtml(shortId(row.taskId))} · ${escapeHtml(shortId(row.alertId))}</span>
+            </div>
+          </td>
+          <td>
+            <div class="cell-main">
+              <span class="mono">${escapeHtml(row.ownerRole || "-")}</span>
+              <span class="mono muted">${escapeHtml(row.ownerUserId || "未指派")}</span>
+            </div>
+          </td>
+          <td>${statusChip(row.status)}</td>
+          <td>
+            <div class="cell-main">
+              <span>${escapeHtml(row.lastComment || "-")}</span>
+              <span class="mono muted">${escapeHtml(formatDate(row.updatedAt || row.createdAt))}</span>
+            </div>
+          </td>
+          <td>
+            <div class="chips">
+              <button class="button compact" type="button" data-role="alert-task-transition" data-task-id="${escapeHtml(row.taskId)}" data-status="PROCESSING"${row.status === "PROCESSING" ? " disabled" : ""}>处理中</button>
+              <button class="button compact" type="button" data-role="alert-task-transition" data-task-id="${escapeHtml(row.taskId)}" data-status="RESOLVED"${row.status === "RESOLVED" ? " disabled" : ""}>解决</button>
+              <button class="button compact danger" type="button" data-role="alert-task-transition" data-task-id="${escapeHtml(row.taskId)}" data-status="REJECTED"${row.status === "REJECTED" ? " disabled" : ""}>驳回</button>
+            </div>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadQualityGovernanceTrends() {
+      const trend = await api(`/api/agent/quality/trends?${params()}`);
+      state.latestQualityGovernanceTrend = trend;
+      $("#qualityGovernanceTrendRange").textContent = `${trend.fromDate || "-"} 至 ${trend.toDate || "-"} · 按天观察告警打开、告警恢复和任务处理`;
+      renderGovernanceTrendChart(trend.dailyTrends || []);
+      renderGovernanceTrendRows(trend.dailyTrends || []);
+    }
+
+    function renderGovernanceTrendChart(rows) {
+      if (!rows.length) {
+        $("#qualityGovernanceTrendChart").innerHTML = `<div class="state">暂无治理趋势数据</div>`;
+        return;
+      }
+      const visibleRows = rows.slice(-14);
+      const max = Math.max(...visibleRows.flatMap((row) => [
+        row.openedAlerts || 0,
+        row.resolvedAlerts || 0,
+        row.createdTasks || 0,
+        row.completedTasks || 0
+      ]), 1);
+      const points = (field) => visibleRows.map((row, index) => {
+        const x = 28 + index * (Math.max(1, 260 / Math.max(1, visibleRows.length - 1)));
+        const y = 104 - ((row[field] || 0) / max) * 78;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+      $("#qualityGovernanceTrendChart").innerHTML = `
+        <svg viewBox="0 0 320 128" role="img" aria-label="质量治理趋势图">
+          <line x1="28" y1="104" x2="300" y2="104" stroke="#d7dde7" />
+          <line x1="28" y1="24" x2="28" y2="104" stroke="#d7dde7" />
+          <polyline class="chart-line warn" points="${points("openedAlerts")}" />
+          <polyline class="chart-line" points="${points("resolvedAlerts")}" />
+          <polyline class="chart-line info" points="${points("createdTasks")}" />
+          <text x="28" y="120">${escapeHtml(formatShortDate(visibleRows[0]?.date))}</text>
+          <text x="230" y="120">${escapeHtml(formatShortDate(visibleRows.at(-1)?.date))}</text>
+          <text x="42" y="20">打开/恢复/任务</text>
+        </svg>
+      `;
+    }
+
+    function renderGovernanceTrendRows(rows) {
+      if (!rows.length) {
+        $("#qualityGovernanceTrendRows").innerHTML = `<div class="state">暂无治理趋势数据</div>`;
+        return;
+      }
+      $("#qualityGovernanceTrendRows").innerHTML = rows.slice(-8).map((row) => `
+        <div class="trend-row">
+          <span class="mono">${escapeHtml(formatShortDate(row.date))}</span>
+          <span class="trend-meter" title="告警打开 / 任务完成">
+            <span class="trend-track"><span class="trend-fill warn" style="width:${Math.min(100, Math.max(2, (row.openedAlerts || 0) * 20))}%"></span></span>
+            <span class="trend-track"><span class="trend-fill" style="width:${Math.min(100, Math.max(2, (row.completedTasks || 0) * 20))}%"></span></span>
+          </span>
+          <span class="mono muted">${escapeHtml(row.openedAlerts || 0)} / ${escapeHtml(row.completedTasks || 0)}</span>
+        </div>
+      `).join("");
+    }
+
     async function loadEvalSuites() {
       setLoading("#evalSuiteBody", 5, "正在加载评测集");
       const rows = await api(`/api/agent/evals/suites?${params({ enabledOnly: "true" })}`);
@@ -1500,6 +1734,40 @@
           <td>${escapeHtml(row.caseCount)}</td>
           <td>${statusChip(row.enabled ? "ENABLED" : "DISABLED")}</td>
           <td><button class="button compact" type="button" data-suite-id="${escapeHtml(row.suiteId)}" data-role="eval-suite-run">运行</button></td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadEvalRuns() {
+      setLoading("#evalRunBody", 5, "正在加载评测运行");
+      const rows = await api(`/api/agent/evals/runs?${params({ limit: 10 })}`);
+      state.latestEvalRuns = rows;
+      if (!rows.length) {
+        $("#evalRunBody").innerHTML = `<tr><td class="state" colspan="5">暂无评测运行</td></tr>`;
+        return;
+      }
+      $("#evalRunBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>
+            <div class="cell-main">
+              <span class="mono strong">${escapeHtml(shortId(row.runId))}</span>
+              <span class="mono muted">${escapeHtml(row.runId)}</span>
+            </div>
+          </td>
+          <td>
+            <div class="cell-main">
+              <span class="mono">${escapeHtml(row.modelVersion || "-")}</span>
+              <span class="mono muted">${escapeHtml(row.knowledgeVersion || "-")} · ${escapeHtml(row.promptVersion || "-")}</span>
+            </div>
+          </td>
+          <td>${statusChip(row.status)} <span class="mono muted">${escapeHtml(row.passedCases)}/${escapeHtml(row.totalCases)}</span></td>
+          <td>${escapeHtml(formatDate(row.finishedAt || row.startedAt))}</td>
+          <td>
+            <div class="chips">
+              <button class="button compact" type="button" data-role="eval-baseline-fill" data-run-id="${escapeHtml(row.runId)}">基线</button>
+              <button class="button compact" type="button" data-role="eval-candidate-fill" data-run-id="${escapeHtml(row.runId)}">候选</button>
+            </div>
+          </td>
         </tr>
       `).join("");
     }
@@ -1984,7 +2252,25 @@
         method: "POST"
       });
       showToast(`已生成运营任务：${result.taskId}`);
-      await loadQualityAlerts();
+      await Promise.all([loadQualityAlerts(), loadAlertTasks(), loadQualityGovernanceTrends()]);
+    }
+
+    async function transitionAlertTask(taskId, status) {
+      const commentMap = {
+        PROCESSING: "已开始处理质量告警任务。",
+        RESOLVED: "质量告警已处理完成。",
+        REJECTED: "质量告警任务已驳回。"
+      };
+      const result = await api(`/api/agent/quality/alert-tasks/${encodeURIComponent(taskId)}/transition`, {
+        method: "POST",
+        body: JSON.stringify(contextBody({
+          status,
+          ownerUserId: fields.userId.value.trim() || "admin-console",
+          comment: commentMap[status] || "状态已更新。"
+        }))
+      });
+      showToast(`任务已更新：${result.taskId} -> ${result.status}`);
+      await Promise.all([loadAlertTasks(), loadQualityAlerts(), loadQualityGovernanceTrends()]);
     }
 
     async function runEvalSuite(suiteId) {
@@ -1996,6 +2282,68 @@
         method: "POST"
       });
       showToast(`评测集运行完成：${result.status}，通过 ${result.passedCases}/${result.totalCases}，版本 ${result.knowledgeVersion}`);
+      if ($("#evalCandidateRunId")) {
+        if ($("#evalCandidateRunId").value && !$("#evalBaselineRunId").value) {
+          $("#evalBaselineRunId").value = $("#evalCandidateRunId").value;
+        }
+        $("#evalCandidateRunId").value = result.runId;
+      }
+      await loadEvalRuns();
+    }
+
+    async function compareEvalRuns() {
+      const baselineRunId = $("#evalBaselineRunId").value.trim();
+      const candidateRunId = $("#evalCandidateRunId").value.trim();
+      if (!baselineRunId || !candidateRunId) {
+        throw new Error("请先选择基线运行和候选运行");
+      }
+      const result = await api(`/api/agent/evals/runs/compare?${new URLSearchParams({ baselineRunId, candidateRunId }).toString()}`);
+      const notable = (result.cases || []).filter((row) => row.changeType !== "UNCHANGED").slice(0, 6);
+      $("#evalComparePanel").innerHTML = `
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="detail-label">基线版本</div>
+            <div class="detail-value mono">${escapeHtml(result.baselineVersion)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">候选版本</div>
+            <div class="detail-value mono">${escapeHtml(result.candidateVersion)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">退化 / 提升</div>
+            <div class="detail-value">${statusChip(`REGRESSED ${result.regressedCases}`)} ${statusChip(`IMPROVED ${result.improvedCases}`)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">用例变化</div>
+            <div class="detail-value mono">unchanged ${escapeHtml(result.unchangedCases)} · new ${escapeHtml(result.newCases)} · removed ${escapeHtml(result.removedCases)}</div>
+          </div>
+        </div>
+        <pre class="message-box">${escapeHtml(notable.length ? notable.map((row) =>
+          `${row.changeType} ${row.caseId}: ${row.baselinePassed} -> ${row.candidatePassed}`
+        ).join("\n") : "没有发现退化或新增差异。")}</pre>
+      `;
+      showToast(`评测对比完成：退化 ${result.regressedCases} 条，提升 ${result.improvedCases} 条`);
+    }
+
+    async function previewRetrieval() {
+      const query = $("#retrievalQuery").value.trim();
+      const mode = $("#retrievalMode").value;
+      const topK = Number($("#retrievalTopK").value || 5);
+      const result = await api(`/api/knowledge/search/preview?${params({ query, mode, topK })}`);
+      const rows = result.hits || [];
+      if (!rows.length) {
+        $("#retrievalPreviewRows").innerHTML = `<div class="state">${escapeHtml(result.mode)} 模式暂无召回结果，PGVector 未就绪时 vector 模式可能为空</div>`;
+        showToast(`检索预览完成：${result.mode}，0 条`);
+        return;
+      }
+      $("#retrievalPreviewRows").innerHTML = rows.map((row) => `
+        <div class="bar-row">
+          <span class="mono" title="${escapeHtml(row.title)}">${escapeHtml(shortId(row.docId))}</span>
+          <span class="muted">${escapeHtml(row.title)} · score ${escapeHtml(formatNumber(row.score))} · ${escapeHtml(row.rerankerProvider || "none")}</span>
+          <span class="mono muted">${escapeHtml(shortId(row.chunkId))}</span>
+        </div>
+      `).join("");
+      showToast(`检索预览完成：${result.mode}，${rows.length} 条，vectorReady=${result.vectorReady}`);
     }
 
     function addCandidateTag(tagCode) {
@@ -2034,7 +2382,14 @@
             setError("#qualityAlertBody", 6, error);
             $("#qualityAlertRuleRows").innerHTML = `<div class="state">告警规则加载失败</div>`;
           }),
+          loadAlertTasks().catch((error) => setError("#alertTaskBody", 5, error)),
+          loadQualityGovernanceTrends().catch((error) => {
+            showToast(`治理趋势加载失败：${error.message}`);
+            $("#qualityGovernanceTrendChart").innerHTML = `<div class="state">治理趋势加载失败</div>`;
+            $("#qualityGovernanceTrendRows").innerHTML = `<div class="state">治理趋势加载失败</div>`;
+          }),
           loadEvalSuites().catch((error) => setError("#evalSuiteBody", 5, error)),
+          loadEvalRuns().catch((error) => setError("#evalRunBody", 5, error)),
           loadFeedbackQuality().catch((error) => {
             showToast(`反馈质量指标加载失败：${error.message}`);
             renderBars("#feedbackReasonBars", "反馈原因", []);
@@ -2089,8 +2444,20 @@
           fillAlertRule(target.dataset.ruleId);
         } else if (target.dataset.role === "alert-task") {
           await createAlertTask(target.dataset.alertId);
+        } else if (target.dataset.role === "alert-task-transition") {
+          await transitionAlertTask(target.dataset.taskId, target.dataset.status);
         } else if (target.dataset.role === "eval-suite-run") {
           await runEvalSuite(target.dataset.suiteId);
+        } else if (target.dataset.role === "eval-baseline-fill") {
+          $("#evalBaselineRunId").value = target.dataset.runId;
+          showToast(`已选择基线运行：${target.dataset.runId}`);
+        } else if (target.dataset.role === "eval-candidate-fill") {
+          $("#evalCandidateRunId").value = target.dataset.runId;
+          showToast(`已选择候选运行：${target.dataset.runId}`);
+        } else if (target.dataset.role === "eval-compare") {
+          await compareEvalRuns();
+        } else if (target.dataset.role === "retrieval-preview") {
+          await previewRetrieval();
         }
       } catch (error) {
         showToast(error.message);

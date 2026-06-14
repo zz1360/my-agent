@@ -1,6 +1,7 @@
 package com.superagent.logistics.api;
 
 import com.superagent.logistics.api.dto.EvalCaseResponse;
+import com.superagent.logistics.api.dto.EvalRunComparisonResponse;
 import com.superagent.logistics.api.dto.EvalRunResponse;
 import com.superagent.logistics.api.dto.EvalSuiteResponse;
 import com.superagent.logistics.eval.AgentEvalService;
@@ -33,6 +34,18 @@ public class AgentEvalController {
     public List<EvalSuiteResponse> listSuites(@RequestParam(required = false) String tenantId,
                                               @RequestParam(defaultValue = "true") boolean enabledOnly) {
         return evalService.listSuites(tenantId, enabledOnly);
+    }
+
+    @GetMapping("/runs")
+    public List<EvalRunResponse> listRuns(@RequestParam(required = false) String tenantId,
+                                          @RequestParam(defaultValue = "10") int limit) {
+        return evalService.listRuns(tenantId, limit);
+    }
+
+    @GetMapping("/runs/compare")
+    public EvalRunComparisonResponse compareRuns(@RequestParam String baselineRunId,
+                                                 @RequestParam String candidateRunId) {
+        return evalService.compareRuns(baselineRunId, candidateRunId);
     }
 
     @PostMapping("/run")

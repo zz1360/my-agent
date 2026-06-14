@@ -6,6 +6,7 @@ import com.superagent.logistics.api.dto.KnowledgeDocumentRequest;
 import com.superagent.logistics.api.dto.KnowledgeDocumentResponse;
 import com.superagent.logistics.api.dto.KnowledgePreviewResponse;
 import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
+import com.superagent.logistics.api.dto.KnowledgeSearchPreviewResponse;
 import com.superagent.logistics.knowledge.KnowledgeAdminService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -109,7 +110,18 @@ public class KnowledgeAdminController {
                                  @RequestParam(required = false) String userId,
                                  @RequestParam(required = false) List<String> roles,
                                  @RequestParam String query,
-                                 @RequestParam(defaultValue = "5") int topK) {
-        return knowledgeAdminService.search(tenantId, userId, roles, query, topK);
+                                 @RequestParam(defaultValue = "5") int topK,
+                                 @RequestParam(defaultValue = "hybrid_reranker") String mode) {
+        return knowledgeAdminService.search(tenantId, userId, roles, query, topK, mode);
+    }
+
+    @GetMapping("/search/preview")
+    public KnowledgeSearchPreviewResponse searchPreview(@RequestParam(required = false) String tenantId,
+                                                        @RequestParam(required = false) String userId,
+                                                        @RequestParam(required = false) List<String> roles,
+                                                        @RequestParam String query,
+                                                        @RequestParam(defaultValue = "5") int topK,
+                                                        @RequestParam(defaultValue = "hybrid_reranker") String mode) {
+        return knowledgeAdminService.searchPreview(tenantId, userId, roles, query, topK, mode);
     }
 }

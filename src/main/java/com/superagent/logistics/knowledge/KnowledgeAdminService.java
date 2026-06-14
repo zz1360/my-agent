@@ -7,6 +7,8 @@ import com.superagent.logistics.api.dto.KnowledgeDocumentRequest;
 import com.superagent.logistics.api.dto.KnowledgeDocumentResponse;
 import com.superagent.logistics.api.dto.KnowledgePreviewResponse;
 import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
+import com.superagent.logistics.api.dto.KnowledgeSearchHitResponse;
+import com.superagent.logistics.api.dto.KnowledgeSearchPreviewResponse;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
@@ -34,15 +36,18 @@ public class KnowledgeAdminService {
     private final AgentPermissionService permissionService;
     private final KnowledgeSearchService searchService;
     private final KnowledgeIndexJobService indexJobService;
+    private final PgVectorKnowledgeStore vectorKnowledgeStore;
 
     public KnowledgeAdminService(JdbcTemplate jdbcTemplate,
                                  AgentPermissionService permissionService,
                                  KnowledgeSearchService searchService,
-                                 KnowledgeIndexJobService indexJobService) {
+                                 KnowledgeIndexJobService indexJobService,
+                                 PgVectorKnowledgeStore vectorKnowledgeStore) {
         this.jdbcTemplate = jdbcTemplate;
         this.permissionService = permissionService;
         this.searchService = searchService;
         this.indexJobService = indexJobService;
+        this.vectorKnowledgeStore = vectorKnowledgeStore;
     }
 
     @Transactional
@@ -219,12 +224,36 @@ public class KnowledgeAdminService {
         return indexJobService.get(context.tenantId(), jobId);
     }
 
-    public List<Citation> search(String tenantId, String userId, List<String> roles, String query, int topK) {
+    public List<Citation> search(String tenantId, String userId, List<String> roles, String query, int topK, String mode) {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
-        return searchService.search(context, query, topK).stream()
+        return searchService.search(context, query, topK, KnowledgeSearchOptions.fromMode(mode)).stream()
                 .map(result -> new Citation("knowledge", result.chunk().title(), result.chunk().docId(),
                         result.chunk().chunkId(), excerpt(result.chunk().content(), 160)))
                 .toList();
+    }
+
+    public KnowledgeSearchPreviewResponse searchPreview(String tenantId, String userId, List<String> roles,
+                                                        String query, int topK, String mode) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        String normalizedMode = KnowledgeSearchOptions.normalizeMode(mode);
+        int resultLimit = Math.max(1, Math.min(topK, 20));
+        List<KnowledgeSearchHitResponse> hits = searchService.search(context, query, resultLimit,
+                        KnowledgeSearchOptions.fromMode(normalizedMode))
+                .stream()
+                .map(result -> new KnowledgeSearchHitResponse(
+                        result.chunk().title(),
+                        result.chunk().docId(),
+                        result.chunk().chunkId(),
+                        excerpt(result.chunk().content(), 180),
+                        result.score(),
+                        result.vectorScore(),
+                        result.keywordScore(),
+                        result.ruleScore(),
+                        result.rerankerScore(),
+                        result.rerankerProvider()
+                ))
+                .toList();
+        return new KnowledgeSearchPreviewResponse(normalizedMode, vectorKnowledgeStore.isReady(), resultLimit, hits);
     }
 
     private KnowledgeDocumentResponse get(String tenantId, String docId, AgentUserContext context, boolean includeChunks) {

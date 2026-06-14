@@ -50,7 +50,11 @@ class LogisticsAgentApplicationTests {
                 .contains("质量告警")
                 .contains("标签字典维护")
                 .contains("告警规则维护")
+                .contains("告警任务流转")
+                .contains("治理趋势图")
                 .contains("评测运行版本信息")
+                .contains("评测结果版本对比")
+                .contains("检索模式灰度")
                 .contains("反馈样本池")
                 .contains("评测候选")
                 .contains("候选操作审计")
@@ -64,11 +68,18 @@ class LogisticsAgentApplicationTests {
                 .contains("/api/agent/quality/feedback-tags")
                 .contains("/api/agent/quality/alert-rules/")
                 .contains("/api/agent/quality/alerts/evaluate")
+                .contains("/api/agent/quality/alert-tasks")
+                .contains("/api/agent/quality/trends")
                 .contains("/task?")
                 .contains("/api/agent/evals/suites")
+                .contains("/api/agent/evals/runs/compare")
+                .contains("/api/knowledge/search/preview")
                 .contains("feedback-tag-save")
                 .contains("alert-rule-save")
                 .contains("alert-task")
+                .contains("alert-task-transition")
+                .contains("eval-compare")
+                .contains("retrieval-preview")
                 .contains("modelVersion")
                 .contains("candidate-annotate-save")
                 .contains("/annotate")
@@ -174,13 +185,23 @@ class LogisticsAgentApplicationTests {
                 SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_NAME = 'ai_quality_alert' AND COLUMN_NAME = 'task_id'
                 """, Integer.class);
+        Integer opsTaskUpdatedAtColumn = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'logistics_ops_task' AND COLUMN_NAME = 'updated_at'
+                """, Integer.class);
+        Integer opsTaskOwnerColumn = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'logistics_ops_task' AND COLUMN_NAME = 'owner_user_id'
+                """, Integer.class);
         String suiteVersion = jdbcTemplate.queryForObject("""
                 SELECT suite_version FROM ai_eval_suite
                 WHERE tenant_id = ? AND suite_id = ?
                 """, String.class, "T001", "suite-logistics-regression");
         assertThat(evalRunModelVersionColumn).isEqualTo(1);
         assertThat(alertTaskColumn).isEqualTo(1);
-        assertThat(suiteVersion).isEqualTo("v1.8");
+        assertThat(opsTaskUpdatedAtColumn).isEqualTo(1);
+        assertThat(opsTaskOwnerColumn).isEqualTo(1);
+        assertThat(suiteVersion).isEqualTo("v1.9");
     }
 
     @Test
@@ -676,6 +697,84 @@ class LogisticsAgentApplicationTests {
         assertThat(alertsWithTask).anySatisfy(alert -> {
             assertThat(alert.get("alertId").asText()).isEqualTo(finalNegativeRateAlertId);
             assertThat(alert.get("taskId").asText()).isEqualTo(alertTask.get("taskId").asText());
+        });
+
+        String alertTasksBody = mockMvc.perform(get("/api/agent/quality/alert-tasks")
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER")
+                        .param("limit", "10"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode alertTasks = objectMapper.readTree(alertTasksBody);
+        assertThat(alertTasks).anySatisfy(task -> {
+            assertThat(task.get("taskId").asText()).isEqualTo(alertTask.get("taskId").asText());
+            assertThat(task.get("status").asText()).isEqualTo("OPEN");
+            assertThat(task.get("alertId").asText()).isEqualTo(finalNegativeRateAlertId);
+        });
+
+        String processingTaskBody = mockMvc.perform(post("/api/agent/quality/alert-tasks/{taskId}/transition",
+                                alertTask.get("taskId").asText())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"],
+                                  "status": "PROCESSING",
+                                  "ownerUserId": "qa-owner",
+                                  "comment": "开始复核负反馈告警。"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode processingTask = objectMapper.readTree(processingTaskBody);
+        assertThat(processingTask.get("status").asText()).isEqualTo("PROCESSING");
+        assertThat(processingTask.get("ownerUserId").asText()).isEqualTo("qa-owner");
+
+        String resolvedTaskBody = mockMvc.perform(post("/api/agent/quality/alert-tasks/{taskId}/transition",
+                                alertTask.get("taskId").asText())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "userId": "admin-console",
+                                  "roles": ["OPS_MANAGER"],
+                                  "status": "RESOLVED",
+                                  "ownerUserId": "qa-owner",
+                                  "comment": "已确认规则命中并完成复核。"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode resolvedTask = objectMapper.readTree(resolvedTaskBody);
+        assertThat(resolvedTask.get("status").asText()).isEqualTo("RESOLVED");
+        assertThat(resolvedTask.get("completedAt").asText()).isNotBlank();
+        String resolvedAlertStatus = jdbcTemplate.queryForObject("""
+                SELECT status FROM ai_quality_alert
+                WHERE tenant_id = ? AND alert_id = ?
+                """, String.class, "T001", finalNegativeRateAlertId);
+        assertThat(resolvedAlertStatus).isEqualTo("RESOLVED");
+
+        String governanceTrendBody = mockMvc.perform(get("/api/agent/quality/trends")
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode governanceTrend = objectMapper.readTree(governanceTrendBody);
+        assertThat(governanceTrend.get("dailyTrends")).isNotEmpty();
+        assertThat(governanceTrend.get("taskStatusCounts")).anySatisfy(row -> {
+            assertThat(row.get("name").asText()).isEqualTo("RESOLVED");
+            assertThat(row.get("count").asLong()).isGreaterThanOrEqualTo(1);
         });
     }
 
@@ -1382,7 +1481,7 @@ class LogisticsAgentApplicationTests {
         JsonNode suites = objectMapper.readTree(suitesBody);
         assertThat(suites).anySatisfy(suite -> {
             assertThat(suite.get("suiteId").asText()).isEqualTo("suite-logistics-regression");
-            assertThat(suite.get("suiteVersion").asText()).isEqualTo("v1.8");
+            assertThat(suite.get("suiteVersion").asText()).isEqualTo("v1.9");
             assertThat(suite.get("caseCount").asInt()).isGreaterThanOrEqualTo(5);
         });
     }
@@ -1462,6 +1561,23 @@ class LogisticsAgentApplicationTests {
                 .getContentAsString();
         JsonNode history = objectMapper.readTree(historyBody);
         assertThat(history).hasSizeGreaterThanOrEqualTo(2);
+
+        String searchPreviewBody = mockMvc.perform(get("/api/knowledge/search/preview")
+                        .param("tenantId", "T001")
+                        .param("roles", "CUSTOMER_SERVICE")
+                        .param("query", "冷链运输温度超过 10C 后客服应该怎么处理？")
+                        .param("mode", "keyword")
+                        .param("topK", "5"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode searchPreview = objectMapper.readTree(searchPreviewBody);
+        assertThat(searchPreview.get("mode").asText()).isEqualTo("KEYWORD_ONLY");
+        assertThat(searchPreview.get("hits")).anySatisfy(hit -> {
+            assertThat(hit.get("docId").asText()).isEqualTo("policy-cold-chain-v2");
+            assertThat(hit.get("keywordScore").asDouble()).isGreaterThan(0);
+        });
     }
 
     @Test
@@ -1469,8 +1585,8 @@ class LogisticsAgentApplicationTests {
         String runBody = mockMvc.perform(post("/api/agent/evals/run")
                         .param("tenantId", "T001")
                         .param("modelVersion", "deepseek-v4-flash")
-                        .param("knowledgeVersion", "kb-v1.8")
-                        .param("promptVersion", "prompt-v1.8"))
+                        .param("knowledgeVersion", "kb-v1.9")
+                        .param("promptVersion", "prompt-v1.9"))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()
@@ -1481,8 +1597,8 @@ class LogisticsAgentApplicationTests {
         assertThat(run.get("failedCases").asInt()).isEqualTo(0);
         assertThat(run.get("status").asText()).isEqualTo("PASSED");
         assertThat(run.get("modelVersion").asText()).isEqualTo("deepseek-v4-flash");
-        assertThat(run.get("knowledgeVersion").asText()).isEqualTo("kb-v1.8");
-        assertThat(run.get("promptVersion").asText()).isEqualTo("prompt-v1.8");
+        assertThat(run.get("knowledgeVersion").asText()).isEqualTo("kb-v1.9");
+        assertThat(run.get("promptVersion").asText()).isEqualTo("prompt-v1.9");
         assertThat(run.get("results")).allSatisfy(result ->
                 assertThat(result.get("passed").asBoolean()).isTrue());
         assertThat(run.get("results")).anySatisfy(result -> {
@@ -1511,25 +1627,51 @@ class LogisticsAgentApplicationTests {
                 .getContentAsString();
         JsonNode found = objectMapper.readTree(foundBody);
         assertThat(found.get("runId").asText()).isEqualTo(runId);
-        assertThat(found.get("knowledgeVersion").asText()).isEqualTo("kb-v1.8");
+        assertThat(found.get("knowledgeVersion").asText()).isEqualTo("kb-v1.9");
 
         String suiteRunBody = mockMvc.perform(post("/api/agent/evals/suites/{suiteId}/run", "suite-logistics-regression")
                         .param("tenantId", "T001")
                         .param("modelVersion", "deepseek-v4-flash")
-                        .param("knowledgeVersion", "kb-v1.8-suite")
-                        .param("promptVersion", "prompt-v1.8-suite"))
+                        .param("knowledgeVersion", "kb-v1.9-suite")
+                        .param("promptVersion", "prompt-v1.9-suite"))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
         JsonNode suiteRun = objectMapper.readTree(suiteRunBody);
         assertThat(suiteRun.get("suiteId").asText()).isEqualTo("suite-logistics-regression");
-        assertThat(suiteRun.get("suiteVersion").asText()).isEqualTo("v1.8");
+        assertThat(suiteRun.get("suiteVersion").asText()).isEqualTo("v1.9");
         assertThat(suiteRun.get("status").asText()).isEqualTo("PASSED");
         assertThat(suiteRun.get("totalCases").asInt()).isGreaterThanOrEqualTo(5);
         assertThat(suiteRun.get("modelVersion").asText()).isEqualTo("deepseek-v4-flash");
-        assertThat(suiteRun.get("knowledgeVersion").asText()).isEqualTo("kb-v1.8-suite");
-        assertThat(suiteRun.get("promptVersion").asText()).isEqualTo("prompt-v1.8-suite");
+        assertThat(suiteRun.get("knowledgeVersion").asText()).isEqualTo("kb-v1.9-suite");
+        assertThat(suiteRun.get("promptVersion").asText()).isEqualTo("prompt-v1.9-suite");
+
+        String runsBody = mockMvc.perform(get("/api/agent/evals/runs")
+                        .param("tenantId", "T001")
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode runs = objectMapper.readTree(runsBody);
+        assertThat(runs).anySatisfy(item ->
+                assertThat(item.get("runId").asText()).isEqualTo(runId));
+        assertThat(runs).anySatisfy(item ->
+                assertThat(item.get("runId").asText()).isEqualTo(suiteRun.get("runId").asText()));
+
+        String compareBody = mockMvc.perform(get("/api/agent/evals/runs/compare")
+                        .param("baselineRunId", runId)
+                        .param("candidateRunId", suiteRun.get("runId").asText()))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode compare = objectMapper.readTree(compareBody);
+        assertThat(compare.get("baselineRunId").asText()).isEqualTo(runId);
+        assertThat(compare.get("candidateRunId").asText()).isEqualTo(suiteRun.get("runId").asText());
+        assertThat(compare.get("regressedCases").asInt()).isEqualTo(0);
+        assertThat(compare.get("cases")).isNotEmpty();
     }
 
     private JsonNode awaitIndexJob(String jobId) throws Exception {
