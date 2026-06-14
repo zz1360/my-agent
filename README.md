@@ -32,7 +32,7 @@ mvn -Dmaven.repo.local=/Users/zhangzhuang/Documents/develop/maven_repository spr
 
 启动后可访问 `http://localhost:8080/chat.html` 打开轻量聊天页，也可以访问 `http://localhost:8080/admin/actions.html` 打开轻量管理台。
 
-云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。v0.6 知识库运营闭环见 [docs/v06-knowledge-ops-workflow.md](docs/v06-knowledge-ops-workflow.md)。v0.7 RAG 检索质量实验台见 [docs/v07-rag-experiment-lab.md](docs/v07-rag-experiment-lab.md)。v0.8 Agent 动作草稿与人工复核见 [docs/v08-agent-action-workflow.md](docs/v08-agent-action-workflow.md)。v0.9 动作执行适配器与低风险自动化见 [docs/v09-action-execution-automation.md](docs/v09-action-execution-automation.md)。v1.0 业务执行闭环、幂等与重试见 [docs/v10-business-execution-idempotency-retry.md](docs/v10-business-execution-idempotency-retry.md)。v1.1 执行可观测性与管理后台接口见 [docs/v11-execution-observability-admin.md](docs/v11-execution-observability-admin.md)。v1.2 轻量管理页面见 [docs/v12-action-admin-console.md](docs/v12-action-admin-console.md)。v1.3 对话历史、流式输出与反馈闭环见 [docs/v13-conversation-stream-feedback.md](docs/v13-conversation-stream-feedback.md)。v1.4 反馈样本池、评测候选与 RAG 实验闭环见 [docs/v14-feedback-eval-rag-loop.md](docs/v14-feedback-eval-rag-loop.md)。v1.5 评测候选标注、审批与质量看板见 [docs/v15-candidate-annotation-quality-dashboard.md](docs/v15-candidate-annotation-quality-dashboard.md)。v1.6 质量趋势与候选审计见 [docs/v16-quality-trend-audit.md](docs/v16-quality-trend-audit.md)。v1.7 质量告警、标签治理和评测集版本化见 [docs/v17-quality-alert-tag-governance-eval-suite.md](docs/v17-quality-alert-tag-governance-eval-suite.md)。
+云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。v0.6 知识库运营闭环见 [docs/v06-knowledge-ops-workflow.md](docs/v06-knowledge-ops-workflow.md)。v0.7 RAG 检索质量实验台见 [docs/v07-rag-experiment-lab.md](docs/v07-rag-experiment-lab.md)。v0.8 Agent 动作草稿与人工复核见 [docs/v08-agent-action-workflow.md](docs/v08-agent-action-workflow.md)。v0.9 动作执行适配器与低风险自动化见 [docs/v09-action-execution-automation.md](docs/v09-action-execution-automation.md)。v1.0 业务执行闭环、幂等与重试见 [docs/v10-business-execution-idempotency-retry.md](docs/v10-business-execution-idempotency-retry.md)。v1.1 执行可观测性与管理后台接口见 [docs/v11-execution-observability-admin.md](docs/v11-execution-observability-admin.md)。v1.2 轻量管理页面见 [docs/v12-action-admin-console.md](docs/v12-action-admin-console.md)。v1.3 对话历史、流式输出与反馈闭环见 [docs/v13-conversation-stream-feedback.md](docs/v13-conversation-stream-feedback.md)。v1.4 反馈样本池、评测候选与 RAG 实验闭环见 [docs/v14-feedback-eval-rag-loop.md](docs/v14-feedback-eval-rag-loop.md)。v1.5 评测候选标注、审批与质量看板见 [docs/v15-candidate-annotation-quality-dashboard.md](docs/v15-candidate-annotation-quality-dashboard.md)。v1.6 质量趋势与候选审计见 [docs/v16-quality-trend-audit.md](docs/v16-quality-trend-audit.md)。v1.7 质量告警、标签治理和评测集版本化见 [docs/v17-quality-alert-tag-governance-eval-suite.md](docs/v17-quality-alert-tag-governance-eval-suite.md)。v1.8 可编辑治理后台、告警任务化与评测版本追踪见 [docs/v18-editable-governance-alert-task-versioned-eval.md](docs/v18-editable-governance-alert-task-versioned-eval.md)。
 
 ## 示例请求
 
@@ -73,7 +73,7 @@ curl -s http://localhost:8080/api/agent/chat \
 ## API
 
 - `GET /chat.html`：轻量聊天页，支持流式回答、历史会话、反馈、引用、工具调用、动作草稿生成和审计 trace
-- `GET /admin/actions.html`：轻量动作管理台页面，聚合动作列表、执行日志、重试队列、指标、业务回链、反馈样本池、评测候选池、反馈质量看板、质量趋势、标签字典、质量告警、候选操作审计和评测集版本
+- `GET /admin/actions.html`：轻量动作管理台页面，聚合动作列表、执行日志、重试队列、指标、业务回链、反馈样本池、评测候选池、反馈质量看板、质量趋势、标签字典维护、质量告警、告警规则维护、候选操作审计和评测集版本
 - `POST /api/agent/chat`：自然语言问答
 - `POST /api/agent/chat/stream`：SSE 流式问答，输出状态、回答增量和最终完整响应
 - `GET /api/agent/conversations`：查询当前用户的历史会话列表
@@ -89,9 +89,12 @@ curl -s http://localhost:8080/api/agent/chat \
 - `GET /api/agent/feedback/quality-metrics`：查看负反馈率、候选转化率、审批通过率和实验通过率，支持 `from/to` 日期窗口并返回每日趋势
 - `GET /api/agent/eval-candidate-audits`：查询评测候选创建、标注、审批、RAG 实验和转评测的操作审计
 - `GET /api/agent/quality/feedback-tags`：查询反馈标签字典
+- `POST /api/agent/quality/feedback-tags/{tagCode}`：新增或更新反馈标签字典项，支持名称、分类、排序、启停和说明
 - `GET /api/agent/quality/alert-rules`：查询质量告警规则
+- `POST /api/agent/quality/alert-rules/{ruleId}`：新增或更新质量告警规则，支持指标、阈值、窗口、级别和启停
 - `GET /api/agent/quality/alerts`：查询质量告警记录
 - `POST /api/agent/quality/alerts/evaluate`：评估质量告警规则并生成或恢复告警
+- `POST /api/agent/quality/alerts/{alertId}/task`：将质量告警转成运营复核任务，并回写任务 ID
 - `POST /api/agent/customer-diagnosis`：客户异常诊断闭环，返回结构化指标、归因、SLA/赔付候选、引用和审计 trace
 - `POST /api/agent/actions/from-diagnosis`：根据客户诊断 trace 生成客户回复、工单备注、赔付复核等动作草稿
 - `GET /api/agent/actions`：查询动作草稿，可按客户和状态过滤
@@ -120,8 +123,8 @@ curl -s http://localhost:8080/api/agent/chat \
 - `GET /api/rag/experiments/{experimentId}/runs`：查看实验运行历史
 - `GET /api/agent/evals/cases`：查看 Agent 评测用例
 - `GET /api/agent/evals/suites`：查看评测集版本和用例数量
-- `POST /api/agent/evals/run`：运行 Agent 回归评测
-- `POST /api/agent/evals/suites/{suiteId}/run`：按指定评测集版本运行回归评测
+- `POST /api/agent/evals/run`：运行 Agent 回归评测，可传 `modelVersion/knowledgeVersion/promptVersion`
+- `POST /api/agent/evals/suites/{suiteId}/run`：按指定评测集版本运行回归评测，可传 `modelVersion/knowledgeVersion/promptVersion`
 - `GET /api/agent/evals/runs/{runId}`：查看一次评测结果
 - `GET /api/demo/questions`：演示问题
 - `GET /api/demo/vector-store/status`：查看 PGVector 知识库状态
@@ -139,5 +142,7 @@ curl -s http://localhost:8080/api/agent/chat \
 v1.6 开始，反馈质量看板支持日期窗口和每日趋势。候选创建、人工标注、审批、RAG 实验创建和转正式评测都会写入 `ai_eval_case_candidate_audit`，用于追踪反馈样本是如何变成可回归的评测资产。
 
 v1.7 开始，反馈标签沉淀为字典，质量指标可以按规则生成告警，候选审计记录字段级 diff，评测用例也可以按评测集版本运行。
+
+v1.8 开始，标签字典和告警规则可在管理台维护，告警可以转成运营复核任务，评测运行会记录模型版本、知识库版本和提示词版本。
 
 v0.2 客户异常诊断闭环见 [docs/customer-diagnosis-v02.md](docs/customer-diagnosis-v02.md)。

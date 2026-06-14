@@ -16,6 +16,8 @@ public record QualityAlertResponse(
         String detailJson,
         Instant firstTriggeredAt,
         Instant lastTriggeredAt,
-        Instant resolvedAt
+        Instant resolvedAt,
+        String taskId,
+        Instant taskCreatedAt
 ) {
 }

@@ -78,13 +78,17 @@ public class AgentEvalService implements ApplicationRunner {
     }
 
     public EvalRunResponse run(String tenantId) {
+        return run(tenantId, null, null, null);
+    }
+
+    public EvalRunResponse run(String tenantId, String modelVersion, String knowledgeVersion, String promptVersion) {
         String resolvedTenant = resolveTenant(tenantId);
         List<EvalCase> cases = jdbcTemplate.query("""
                 SELECT * FROM ai_eval_case
                 WHERE tenant_id = ? AND enabled = 1
                 ORDER BY case_id
                 """, this::mapInternalCase, resolvedTenant);
-        return runCases(resolvedTenant, cases, null, null);
+        return runCases(resolvedTenant, cases, null, null, modelVersion, knowledgeVersion, promptVersion);
     }
 
     public List<EvalSuiteResponse> listSuites(String tenantId, boolean enabledOnly) {
@@ -108,6 +112,11 @@ public class AgentEvalService implements ApplicationRunner {
     }
 
     public EvalRunResponse runSuite(String tenantId, String suiteId) {
+        return runSuite(tenantId, suiteId, null, null, null);
+    }
+
+    public EvalRunResponse runSuite(String tenantId, String suiteId, String modelVersion, String knowledgeVersion,
+                                    String promptVersion) {
         String resolvedTenant = resolveTenant(tenantId);
         EvalSuiteResponse suite = findSuite(resolvedTenant, suiteId);
         if (!suite.enabled()) {
@@ -120,17 +129,23 @@ public class AgentEvalService implements ApplicationRunner {
                 WHERE sc.tenant_id = ? AND sc.suite_id = ? AND c.enabled = 1
                 ORDER BY sc.sort_order, c.case_id
                 """, this::mapInternalCase, resolvedTenant, suiteId);
-        return runCases(resolvedTenant, cases, suite.suiteId(), suite.suiteVersion());
+        return runCases(resolvedTenant, cases, suite.suiteId(), suite.suiteVersion(), modelVersion, knowledgeVersion,
+                promptVersion);
     }
 
-    private EvalRunResponse runCases(String resolvedTenant, List<EvalCase> cases, String suiteId, String suiteVersion) {
+    private EvalRunResponse runCases(String resolvedTenant, List<EvalCase> cases, String suiteId, String suiteVersion,
+                                     String modelVersion, String knowledgeVersion, String promptVersion) {
         String runId = "eval-" + UUID.randomUUID().toString().substring(0, 8);
         Instant startedAt = Instant.now();
+        String resolvedModelVersion = defaultVersion(modelVersion, "model-current");
+        String resolvedKnowledgeVersion = defaultVersion(knowledgeVersion, "knowledge-current");
+        String resolvedPromptVersion = defaultVersion(promptVersion, "prompt-current");
         jdbcTemplate.update("""
                         INSERT INTO ai_eval_run
                         (tenant_id, run_id, suite_id, suite_version, status, total_cases, passed_cases,
-                         failed_cases, model_provider, started_at, finished_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         failed_cases, model_provider, model_version, knowledge_version, prompt_version,
+                         started_at, finished_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 resolvedTenant,
                 runId,
@@ -141,6 +156,9 @@ public class AgentEvalService implements ApplicationRunner {
                 0,
                 0,
                 null,
+                resolvedModelVersion,
+                resolvedKnowledgeVersion,
+                resolvedPromptVersion,
                 Timestamp.from(startedAt),
                 null);
 
@@ -384,8 +402,8 @@ public class AgentEvalService implements ApplicationRunner {
 
     private void seedDefaultSuites() {
         Instant now = Instant.now();
-        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v1.7",
-                "覆盖核心问答、客户诊断、提示词注入和 RAG 检索质量的默认回归套件。", now);
+        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v1.8",
+                "覆盖核心问答、客户诊断、提示词注入、RAG 检索质量与质量治理闭环的默认回归套件。", now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-delay-compensation", 10, now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-customer-diagnosis", 20, now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-prompt-injection", 30, now);
@@ -524,6 +542,9 @@ public class AgentEvalService implements ApplicationRunner {
                 rs.getInt("passed_cases"),
                 rs.getInt("failed_cases"),
                 rs.getString("model_provider"),
+                rs.getString("model_version"),
+                rs.getString("knowledge_version"),
+                rs.getString("prompt_version"),
                 rs.getTimestamp("started_at").toInstant(),
                 finishedAt == null ? null : finishedAt.toInstant(),
                 results
@@ -662,6 +683,10 @@ public class AgentEvalService implements ApplicationRunner {
 
     private String resolveTenant(String tenantId) {
         return tenantId == null || tenantId.isBlank() ? "T001" : tenantId;
+    }
+
+    private String defaultVersion(String version, String fallback) {
+        return version == null || version.isBlank() ? fallback : version.trim();
     }
 
     private String excerpt(String content, int maxLength) {

@@ -2,10 +2,13 @@ package com.superagent.logistics.eval;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.superagent.logistics.api.dto.FeedbackTagUpsertRequest;
 import com.superagent.logistics.api.dto.FeedbackTagResponse;
 import com.superagent.logistics.api.dto.QualityAlertEvaluationResponse;
 import com.superagent.logistics.api.dto.QualityAlertResponse;
+import com.superagent.logistics.api.dto.QualityAlertRuleUpsertRequest;
 import com.superagent.logistics.api.dto.QualityAlertRuleResponse;
+import com.superagent.logistics.api.dto.QualityAlertTaskResponse;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
@@ -23,10 +26,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
 public class AgentQualityGovernanceService {
+
+    private static final Set<String> SUPPORTED_METRICS = Set.of("NEGATIVE_RATE", "REVIEW_BACKLOG", "RAG_FAILURE_RATE");
+    private static final Set<String> SUPPORTED_SEVERITIES = Set.of("INFO", "WARN", "ERROR");
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -58,6 +65,53 @@ public class AgentQualityGovernanceService {
         return jdbcTemplate.query(sql.toString(), this::mapFeedbackTag, args.toArray());
     }
 
+    public FeedbackTagResponse upsertFeedbackTag(String tagCode, FeedbackTagUpsertRequest request) {
+        AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        permissionService.checkBusinessReadable(context);
+        checkQualityMaintainer(context);
+        String normalizedTagCode = normalizeTagCode(tagCode);
+        String tagName = required(request.tagName(), "标签名称不能为空");
+        String category = required(request.category(), "标签分类不能为空").toUpperCase(Locale.ROOT);
+        boolean enabled = request.enabled() == null || request.enabled();
+        int sortOrder = request.sortOrder() == null ? 100 : Math.max(0, request.sortOrder());
+        Instant now = Instant.now();
+        long existing = count("""
+                SELECT COUNT(*) FROM ai_feedback_tag_dictionary
+                WHERE tenant_id = ? AND tag_code = ?
+                """, context.tenantId(), normalizedTagCode);
+        if (existing > 0) {
+            jdbcTemplate.update("""
+                            UPDATE ai_feedback_tag_dictionary
+                            SET tag_name = ?, category = ?, description = ?, enabled = ?, sort_order = ?, updated_at = ?
+                            WHERE tenant_id = ? AND tag_code = ?
+                            """,
+                    tagName,
+                    category,
+                    blankToNull(request.description()),
+                    enabled,
+                    sortOrder,
+                    Timestamp.from(now),
+                    context.tenantId(),
+                    normalizedTagCode);
+        } else {
+            jdbcTemplate.update("""
+                            INSERT INTO ai_feedback_tag_dictionary
+                            (tenant_id, tag_code, tag_name, category, description, enabled, sort_order, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                    context.tenantId(),
+                    normalizedTagCode,
+                    tagName,
+                    category,
+                    blankToNull(request.description()),
+                    enabled,
+                    sortOrder,
+                    Timestamp.from(now),
+                    Timestamp.from(now));
+        }
+        return findFeedbackTag(context.tenantId(), normalizedTagCode);
+    }
+
     public List<QualityAlertRuleResponse> listAlertRules(String tenantId, String userId, List<String> roles,
                                                          boolean enabledOnly) {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
@@ -75,6 +129,72 @@ public class AgentQualityGovernanceService {
         }
         sql.append(" ORDER BY metric_type, rule_id");
         return jdbcTemplate.query(sql.toString(), this::mapAlertRule, args.toArray());
+    }
+
+    public QualityAlertRuleResponse upsertAlertRule(String ruleId, QualityAlertRuleUpsertRequest request) {
+        AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        permissionService.checkBusinessReadable(context);
+        checkQualityMaintainer(context);
+        String normalizedRuleId = normalizeRuleId(ruleId);
+        String ruleName = required(request.ruleName(), "规则名称不能为空");
+        String metricType = required(request.metricType(), "指标类型不能为空").toUpperCase(Locale.ROOT);
+        if (!SUPPORTED_METRICS.contains(metricType)) {
+            throw new IllegalArgumentException("暂不支持的指标类型：" + metricType);
+        }
+        BigDecimal thresholdValue = request.thresholdValue();
+        if (thresholdValue == null || thresholdValue.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("阈值必须大于等于 0");
+        }
+        int windowDays = request.windowDays() == null ? 7 : Math.max(1, Math.min(request.windowDays(), 90));
+        String severity = request.severity() == null || request.severity().isBlank()
+                ? "WARN"
+                : request.severity().trim().toUpperCase(Locale.ROOT);
+        if (!SUPPORTED_SEVERITIES.contains(severity)) {
+            throw new IllegalArgumentException("暂不支持的告警级别：" + severity);
+        }
+        boolean enabled = request.enabled() == null || request.enabled();
+        Instant now = Instant.now();
+        long existing = count("""
+                SELECT COUNT(*) FROM ai_quality_alert_rule
+                WHERE tenant_id = ? AND rule_id = ?
+                """, context.tenantId(), normalizedRuleId);
+        if (existing > 0) {
+            jdbcTemplate.update("""
+                            UPDATE ai_quality_alert_rule
+                            SET rule_name = ?, metric_type = ?, threshold_value = ?, window_days = ?,
+                                severity = ?, enabled = ?, description = ?, updated_at = ?
+                            WHERE tenant_id = ? AND rule_id = ?
+                            """,
+                    ruleName,
+                    metricType,
+                    thresholdValue,
+                    windowDays,
+                    severity,
+                    enabled,
+                    blankToNull(request.description()),
+                    Timestamp.from(now),
+                    context.tenantId(),
+                    normalizedRuleId);
+        } else {
+            jdbcTemplate.update("""
+                            INSERT INTO ai_quality_alert_rule
+                            (tenant_id, rule_id, rule_name, metric_type, threshold_value, window_days, severity,
+                             enabled, description, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                    context.tenantId(),
+                    normalizedRuleId,
+                    ruleName,
+                    metricType,
+                    thresholdValue,
+                    windowDays,
+                    severity,
+                    enabled,
+                    blankToNull(request.description()),
+                    Timestamp.from(now),
+                    Timestamp.from(now));
+        }
+        return findAlertRule(context.tenantId(), normalizedRuleId);
     }
 
     public List<QualityAlertResponse> listAlerts(String tenantId, String userId, List<String> roles,
@@ -115,6 +235,81 @@ public class AgentQualityGovernanceService {
         }
         List<QualityAlertResponse> alerts = listAlerts(context.tenantId(), context.userId(), new ArrayList<>(context.roles()), "OPEN", 50);
         return new QualityAlertEvaluationResponse(rules.size(), alerts.size(), resolvedAlerts, alerts);
+    }
+
+    public QualityAlertTaskResponse createAlertTask(String alertId, String tenantId, String userId, List<String> roles) {
+        AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
+        permissionService.checkBusinessReadable(context);
+        checkQualityMaintainer(context);
+        QualityAlertResponse alert = findAlert(context.tenantId(), alertId);
+        String actionId = truncate("quality-alert-" + alert.alertId(), 128);
+        List<QualityAlertTaskResponse> existingTasks = jdbcTemplate.query("""
+                        SELECT task_id, status, created_at
+                        FROM logistics_ops_task
+                        WHERE tenant_id = ? AND action_id = ?
+                        LIMIT 1
+                        """,
+                (rs, rowNum) -> new QualityAlertTaskResponse(
+                        alert.alertId(),
+                        rs.getString("task_id"),
+                        actionId,
+                        rs.getString("status"),
+                        rs.getTimestamp("created_at").toInstant()
+                ),
+                context.tenantId(),
+                actionId);
+        if (!existingTasks.isEmpty()) {
+            QualityAlertTaskResponse task = existingTasks.get(0);
+            jdbcTemplate.update("""
+                            UPDATE ai_quality_alert
+                            SET task_id = ?, task_created_at = ?
+                            WHERE tenant_id = ? AND alert_id = ?
+                            """,
+                    task.taskId(),
+                    Timestamp.from(task.createdAt()),
+                    context.tenantId(),
+                    alert.alertId());
+            return task;
+        }
+
+        Instant now = Instant.now();
+        String taskId = "task-alert-" + UUID.randomUUID().toString().substring(0, 10);
+        String description = """
+                质量告警需要复核。
+                告警ID：%s
+                规则ID：%s
+                指标：%s，当前值 %s，阈值 %s
+                摘要：%s
+                详情：%s
+                """.formatted(alert.alertId(), alert.ruleId(), alert.metricType(), alert.metricValue(),
+                alert.thresholdValue(), alert.summary(), alert.detailJson());
+        jdbcTemplate.update("""
+                        INSERT INTO logistics_ops_task
+                        (tenant_id, task_id, action_id, customer_id, title, description,
+                         owner_role, status, created_by, created_at, completed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                context.tenantId(),
+                taskId,
+                actionId,
+                "QUALITY",
+                truncate("质量告警复核：" + alert.summary(), 255),
+                description,
+                "OPS_MANAGER",
+                "OPEN",
+                context.userId(),
+                Timestamp.from(now),
+                null);
+        jdbcTemplate.update("""
+                        UPDATE ai_quality_alert
+                        SET task_id = ?, task_created_at = ?
+                        WHERE tenant_id = ? AND alert_id = ?
+                        """,
+                taskId,
+                Timestamp.from(now),
+                context.tenantId(),
+                alert.alertId());
+        return new QualityAlertTaskResponse(alert.alertId(), taskId, actionId, "OPEN", now);
     }
 
     private MetricSnapshot metricSnapshot(String tenantId, QualityAlertRuleResponse rule) {
@@ -237,6 +432,42 @@ public class AgentQualityGovernanceService {
                 ruleId);
     }
 
+    private FeedbackTagResponse findFeedbackTag(String tenantId, String tagCode) {
+        return jdbcTemplate.query("""
+                        SELECT *
+                        FROM ai_feedback_tag_dictionary
+                        WHERE tenant_id = ? AND tag_code = ?
+                        """,
+                this::mapFeedbackTag,
+                tenantId,
+                tagCode).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("未找到反馈标签：" + tagCode));
+    }
+
+    private QualityAlertRuleResponse findAlertRule(String tenantId, String ruleId) {
+        return jdbcTemplate.query("""
+                        SELECT *
+                        FROM ai_quality_alert_rule
+                        WHERE tenant_id = ? AND rule_id = ?
+                        """,
+                this::mapAlertRule,
+                tenantId,
+                ruleId).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("未找到告警规则：" + ruleId));
+    }
+
+    private QualityAlertResponse findAlert(String tenantId, String alertId) {
+        return jdbcTemplate.query("""
+                        SELECT *
+                        FROM ai_quality_alert
+                        WHERE tenant_id = ? AND alert_id = ?
+                        """,
+                this::mapAlert,
+                tenantId,
+                alertId).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("未找到质量告警：" + alertId));
+    }
+
     private FeedbackTagResponse mapFeedbackTag(ResultSet rs, int rowNum) throws SQLException {
         return new FeedbackTagResponse(
                 rs.getString("tag_code"),
@@ -265,6 +496,7 @@ public class AgentQualityGovernanceService {
 
     private QualityAlertResponse mapAlert(ResultSet rs, int rowNum) throws SQLException {
         Timestamp resolvedAt = rs.getTimestamp("resolved_at");
+        Timestamp taskCreatedAt = rs.getTimestamp("task_created_at");
         return new QualityAlertResponse(
                 rs.getString("alert_id"),
                 rs.getString("rule_id"),
@@ -278,7 +510,9 @@ public class AgentQualityGovernanceService {
                 rs.getString("detail_json"),
                 rs.getTimestamp("first_triggered_at").toInstant(),
                 rs.getTimestamp("last_triggered_at").toInstant(),
-                resolvedAt == null ? null : resolvedAt.toInstant()
+                resolvedAt == null ? null : resolvedAt.toInstant(),
+                rs.getString("task_id"),
+                taskCreatedAt == null ? null : taskCreatedAt.toInstant()
         );
     }
 
@@ -311,6 +545,40 @@ public class AgentQualityGovernanceService {
         } catch (JsonProcessingException ex) {
             return "{}";
         }
+    }
+
+    private String normalizeTagCode(String tagCode) {
+        String value = required(tagCode, "标签编码不能为空").toUpperCase(Locale.ROOT);
+        if (!value.matches("[A-Z0-9_-]{2,64}")) {
+            throw new IllegalArgumentException("标签编码只能包含字母、数字、下划线或中划线，长度 2-64");
+        }
+        return value;
+    }
+
+    private String normalizeRuleId(String ruleId) {
+        String value = required(ruleId, "规则 ID 不能为空");
+        if (!value.matches("[A-Za-z0-9_-]{3,128}")) {
+            throw new IllegalArgumentException("规则 ID 只能包含字母、数字、下划线或中划线，长度 3-128");
+        }
+        return value;
+    }
+
+    private String required(String value, String message) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(message);
+        }
+        return value.trim();
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 
     private record MetricSnapshot(BigDecimal value, String summary, String detailJson) {

@@ -36,14 +36,20 @@ public class AgentEvalController {
     }
 
     @PostMapping("/run")
-    public EvalRunResponse run(@RequestParam(required = false) String tenantId) {
-        return evalService.run(tenantId);
+    public EvalRunResponse run(@RequestParam(required = false) String tenantId,
+                               @RequestParam(required = false) String modelVersion,
+                               @RequestParam(required = false) String knowledgeVersion,
+                               @RequestParam(required = false) String promptVersion) {
+        return evalService.run(tenantId, modelVersion, knowledgeVersion, promptVersion);
     }
 
     @PostMapping("/suites/{suiteId}/run")
     public EvalRunResponse runSuite(@PathVariable String suiteId,
-                                    @RequestParam(required = false) String tenantId) {
-        return evalService.runSuite(tenantId, suiteId);
+                                    @RequestParam(required = false) String tenantId,
+                                    @RequestParam(required = false) String modelVersion,
+                                    @RequestParam(required = false) String knowledgeVersion,
+                                    @RequestParam(required = false) String promptVersion) {
+        return evalService.runSuite(tenantId, suiteId, modelVersion, knowledgeVersion, promptVersion);
     }
 
     @GetMapping("/runs/{runId}")

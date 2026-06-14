@@ -411,6 +411,19 @@
       gap: 10px;
     }
 
+    .governance-form {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #fbfcfd;
+    }
+
+    .governance-form.wide {
+      grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+    }
+
     .annotation-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -419,7 +432,10 @@
 
     .annotation-form input,
     .annotation-form select,
-    .annotation-form textarea {
+    .annotation-form textarea,
+    .governance-form input,
+    .governance-form select,
+    .governance-form textarea {
       width: 100%;
       min-height: 34px;
       padding: 7px 9px;
@@ -432,6 +448,11 @@
 
     .annotation-form textarea {
       min-height: 72px;
+      resize: vertical;
+    }
+
+    .governance-form textarea {
+      min-height: 34px;
       resize: vertical;
     }
 
@@ -560,7 +581,9 @@
       .kpi-grid,
       .subgrid,
       .detail-grid,
-      .annotation-grid {
+      .annotation-grid,
+      .governance-form,
+      .governance-form.wide {
         grid-template-columns: 1fr;
       }
 
@@ -811,6 +834,36 @@
             </div>
             <span class="chip info" id="tagDictionaryCount">0 个</span>
           </div>
+          <div class="governance-form" aria-label="标签字典维护">
+            <label class="field">
+              <span>标签编码</span>
+              <input id="tagCodeInput" value="RAG_STABILITY" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>标签名称</span>
+              <input id="tagNameInput" value="检索稳定性" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>分类</span>
+              <input id="tagCategoryInput" value="RAG" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>排序</span>
+              <input id="tagSortInput" type="number" min="0" value="15">
+            </label>
+            <label class="field">
+              <span>状态</span>
+              <select id="tagEnabledInput">
+                <option value="true">启用</option>
+                <option value="false">停用</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>说明</span>
+              <textarea id="tagDescriptionInput">召回波动、引用漂移或多轮检索不稳定问题</textarea>
+            </label>
+            <button class="button primary" type="button" data-role="feedback-tag-save">保存标签</button>
+          </div>
           <div class="mini-bars" id="tagDictionaryRows">
             <div class="state">正在加载标签字典</div>
           </div>
@@ -824,6 +877,52 @@
             </div>
             <button class="button compact" type="button" data-role="quality-alert-evaluate">评估规则</button>
           </div>
+          <div class="governance-form wide" aria-label="告警规则维护">
+            <label class="field">
+              <span>规则 ID</span>
+              <input id="alertRuleIdInput" value="qa-negative-rate-7d" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>规则名称</span>
+              <input id="alertRuleNameInput" value="近 7 天负反馈率过高" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>指标</span>
+              <select id="alertMetricInput">
+                <option value="NEGATIVE_RATE">NEGATIVE_RATE</option>
+                <option value="REVIEW_BACKLOG">REVIEW_BACKLOG</option>
+                <option value="RAG_FAILURE_RATE">RAG_FAILURE_RATE</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>阈值</span>
+              <input id="alertThresholdInput" type="number" min="0" step="0.0001" value="0.2">
+            </label>
+            <label class="field">
+              <span>窗口天数</span>
+              <input id="alertWindowInput" type="number" min="1" max="90" value="7">
+            </label>
+            <label class="field">
+              <span>级别</span>
+              <select id="alertSeverityInput">
+                <option value="WARN">WARN</option>
+                <option value="ERROR">ERROR</option>
+                <option value="INFO">INFO</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>状态</span>
+              <select id="alertRuleEnabledInput">
+                <option value="true">启用</option>
+                <option value="false">停用</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>说明</span>
+              <textarea id="alertDescriptionInput">负反馈率超过阈值时触发质量复核</textarea>
+            </label>
+            <button class="button primary" type="button" data-role="alert-rule-save">保存规则</button>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -833,10 +932,11 @@
                   <th>级别</th>
                   <th>状态</th>
                   <th>时间</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody id="qualityAlertBody">
-                <tr><td class="state" colspan="5">正在加载质量告警</td></tr>
+                <tr><td class="state" colspan="6">正在加载质量告警</td></tr>
               </tbody>
             </table>
           </div>
@@ -850,6 +950,20 @@
               <p>按版本管理回归评测用例集合</p>
             </div>
             <span class="chip info" id="evalSuiteCount">0 个</span>
+          </div>
+          <div class="governance-form" aria-label="评测运行版本信息">
+            <label class="field">
+              <span>模型版本</span>
+              <input id="evalModelVersion" value="deepseek-v4-flash" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>知识库版本</span>
+              <input id="evalKnowledgeVersion" value="kb-v1.8" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>提示词版本</span>
+              <input id="evalPromptVersion" value="prompt-v1.8" autocomplete="off">
+            </label>
           </div>
           <div class="table-wrap">
             <table>
@@ -1306,7 +1420,7 @@
     }
 
     async function loadFeedbackTags() {
-      const rows = await api(`/api/agent/quality/feedback-tags?${params({ enabledOnly: "true" })}`);
+      const rows = await api(`/api/agent/quality/feedback-tags?${params({ enabledOnly: "false" })}`);
       state.latestFeedbackTags = rows;
       $("#tagDictionaryCount").textContent = `${rows.length} 个`;
       if (!rows.length) {
@@ -1316,22 +1430,22 @@
       $("#tagDictionaryRows").innerHTML = rows.map((row) => `
         <div class="bar-row">
           <span class="mono" title="${escapeHtml(row.tagName)}">${escapeHtml(row.tagCode)}</span>
-          <span class="muted">${escapeHtml(row.tagName)} · ${escapeHtml(row.category)}</span>
-          <span class="mono muted">${escapeHtml(row.sortOrder)}</span>
+          <span class="muted">${escapeHtml(row.tagName)} · ${escapeHtml(row.category)} · ${row.enabled ? "启用" : "停用"}</span>
+          <button class="button compact" type="button" data-role="feedback-tag-fill" data-tag-code="${escapeHtml(row.tagCode)}">编辑</button>
         </div>
       `).join("");
     }
 
     async function loadQualityAlerts() {
-      setLoading("#qualityAlertBody", 5, "正在加载质量告警");
+      setLoading("#qualityAlertBody", 6, "正在加载质量告警");
       const [alerts, rules] = await Promise.all([
         api(`/api/agent/quality/alerts?${params({ limit: 20 })}`),
-        api(`/api/agent/quality/alert-rules?${params({ enabledOnly: "true" })}`)
+        api(`/api/agent/quality/alert-rules?${params({ enabledOnly: "false" })}`)
       ]);
       state.latestQualityAlerts = alerts;
       state.latestQualityAlertRules = rules;
       if (!alerts.length) {
-        $("#qualityAlertBody").innerHTML = `<tr><td class="state" colspan="5">暂无质量告警</td></tr>`;
+        $("#qualityAlertBody").innerHTML = `<tr><td class="state" colspan="6">暂无质量告警</td></tr>`;
       } else {
         $("#qualityAlertBody").innerHTML = alerts.map((row) => `
           <tr>
@@ -1339,12 +1453,16 @@
               <div class="cell-main">
                 <span class="strong">${escapeHtml(row.summary || row.alertId)}</span>
                 <span class="mono muted">${escapeHtml(shortId(row.alertId))}</span>
+                ${row.taskId ? `<span class="mono muted">任务 ${escapeHtml(shortId(row.taskId))}</span>` : ""}
               </div>
             </td>
             <td><span class="mono">${escapeHtml(row.metricType)} ${escapeHtml(formatNumber(row.metricValue))}/${escapeHtml(formatNumber(row.thresholdValue))}</span></td>
             <td>${statusChip(row.severity)}</td>
             <td>${statusChip(row.status)}</td>
             <td>${escapeHtml(formatDate(row.lastTriggeredAt))}</td>
+            <td>
+              <button class="button compact" type="button" data-alert-id="${escapeHtml(row.alertId)}" data-role="alert-task"${row.taskId ? " disabled" : ""}>转任务</button>
+            </td>
           </tr>
         `).join("");
       }
@@ -1354,8 +1472,8 @@
         $("#qualityAlertRuleRows").innerHTML = rules.map((row) => `
           <div class="bar-row">
             <span class="mono" title="${escapeHtml(row.ruleName)}">${escapeHtml(shortId(row.ruleId))}</span>
-            <span class="muted">${escapeHtml(row.metricType)} · ${escapeHtml(row.windowDays)} 天</span>
-            <span class="mono muted">${escapeHtml(formatNumber(row.thresholdValue))}</span>
+            <span class="muted">${escapeHtml(row.metricType)} · ${escapeHtml(row.windowDays)} 天 · ${row.enabled ? "启用" : "停用"}</span>
+            <button class="button compact" type="button" data-role="alert-rule-fill" data-rule-id="${escapeHtml(row.ruleId)}">编辑</button>
           </div>
         `).join("");
       }
@@ -1801,11 +1919,83 @@
       await loadQualityAlerts();
     }
 
-    async function runEvalSuite(suiteId) {
-      const result = await api(`/api/agent/evals/suites/${encodeURIComponent(suiteId)}/run?${params()}`, {
+    async function saveFeedbackTag() {
+      const tagCode = $("#tagCodeInput").value.trim();
+      const result = await api(`/api/agent/quality/feedback-tags/${encodeURIComponent(tagCode)}`, {
+        method: "POST",
+        body: JSON.stringify(contextBody({
+          tagName: $("#tagNameInput").value.trim(),
+          category: $("#tagCategoryInput").value.trim(),
+          description: $("#tagDescriptionInput").value.trim(),
+          enabled: $("#tagEnabledInput").value === "true",
+          sortOrder: Number($("#tagSortInput").value || 100)
+        }))
+      });
+      showToast(`标签已保存：${result.tagCode}`);
+      await Promise.all([loadFeedbackTags(), loadFeedbackQuality()]);
+    }
+
+    function fillFeedbackTag(tagCode) {
+      const row = state.latestFeedbackTags.find((item) => item.tagCode === tagCode);
+      if (!row) return;
+      $("#tagCodeInput").value = row.tagCode || "";
+      $("#tagNameInput").value = row.tagName || "";
+      $("#tagCategoryInput").value = row.category || "";
+      $("#tagSortInput").value = row.sortOrder ?? 100;
+      $("#tagEnabledInput").value = row.enabled ? "true" : "false";
+      $("#tagDescriptionInput").value = row.description || "";
+      showToast(`已载入标签：${row.tagCode}`);
+    }
+
+    async function saveAlertRule() {
+      const ruleId = $("#alertRuleIdInput").value.trim();
+      const result = await api(`/api/agent/quality/alert-rules/${encodeURIComponent(ruleId)}`, {
+        method: "POST",
+        body: JSON.stringify(contextBody({
+          ruleName: $("#alertRuleNameInput").value.trim(),
+          metricType: $("#alertMetricInput").value,
+          thresholdValue: Number($("#alertThresholdInput").value || 0),
+          windowDays: Number($("#alertWindowInput").value || 7),
+          severity: $("#alertSeverityInput").value,
+          enabled: $("#alertRuleEnabledInput").value === "true",
+          description: $("#alertDescriptionInput").value.trim()
+        }))
+      });
+      showToast(`规则已保存：${result.ruleId}`);
+      await loadQualityAlerts();
+    }
+
+    function fillAlertRule(ruleId) {
+      const row = state.latestQualityAlertRules.find((item) => item.ruleId === ruleId);
+      if (!row) return;
+      $("#alertRuleIdInput").value = row.ruleId || "";
+      $("#alertRuleNameInput").value = row.ruleName || "";
+      $("#alertMetricInput").value = row.metricType || "NEGATIVE_RATE";
+      $("#alertThresholdInput").value = row.thresholdValue ?? 0;
+      $("#alertWindowInput").value = row.windowDays ?? 7;
+      $("#alertSeverityInput").value = row.severity || "WARN";
+      $("#alertRuleEnabledInput").value = row.enabled ? "true" : "false";
+      $("#alertDescriptionInput").value = row.description || "";
+      showToast(`已载入规则：${row.ruleId}`);
+    }
+
+    async function createAlertTask(alertId) {
+      const result = await api(`/api/agent/quality/alerts/${encodeURIComponent(alertId)}/task?${params()}`, {
         method: "POST"
       });
-      showToast(`评测集运行完成：${result.status}，通过 ${result.passedCases}/${result.totalCases}`);
+      showToast(`已生成运营任务：${result.taskId}`);
+      await loadQualityAlerts();
+    }
+
+    async function runEvalSuite(suiteId) {
+      const result = await api(`/api/agent/evals/suites/${encodeURIComponent(suiteId)}/run?${params({
+        modelVersion: $("#evalModelVersion")?.value || "",
+        knowledgeVersion: $("#evalKnowledgeVersion")?.value || "",
+        promptVersion: $("#evalPromptVersion")?.value || ""
+      })}`, {
+        method: "POST"
+      });
+      showToast(`评测集运行完成：${result.status}，通过 ${result.passedCases}/${result.totalCases}，版本 ${result.knowledgeVersion}`);
     }
 
     function addCandidateTag(tagCode) {
@@ -1841,7 +2031,7 @@
           }),
           loadQualityAlerts().catch((error) => {
             showToast(`质量告警加载失败：${error.message}`);
-            setError("#qualityAlertBody", 5, error);
+            setError("#qualityAlertBody", 6, error);
             $("#qualityAlertRuleRows").innerHTML = `<div class="state">告警规则加载失败</div>`;
           }),
           loadEvalSuites().catch((error) => setError("#evalSuiteBody", 5, error)),
@@ -1887,8 +2077,18 @@
           await promoteCandidate(target.dataset.candidateId);
         } else if (target.dataset.role === "candidate-tag-add") {
           addCandidateTag(target.dataset.tagCode);
+        } else if (target.dataset.role === "feedback-tag-save") {
+          await saveFeedbackTag();
+        } else if (target.dataset.role === "feedback-tag-fill") {
+          fillFeedbackTag(target.dataset.tagCode);
         } else if (target.dataset.role === "quality-alert-evaluate") {
           await evaluateQualityAlerts();
+        } else if (target.dataset.role === "alert-rule-save") {
+          await saveAlertRule();
+        } else if (target.dataset.role === "alert-rule-fill") {
+          fillAlertRule(target.dataset.ruleId);
+        } else if (target.dataset.role === "alert-task") {
+          await createAlertTask(target.dataset.alertId);
         } else if (target.dataset.role === "eval-suite-run") {
           await runEvalSuite(target.dataset.suiteId);
         }

@@ -13,6 +13,9 @@ public record EvalRunResponse(
         int passedCases,
         int failedCases,
         String modelProvider,
+        String modelVersion,
+        String knowledgeVersion,
+        String promptVersion,
         Instant startedAt,
         Instant finishedAt,
         List<EvalCaseResultResponse> results

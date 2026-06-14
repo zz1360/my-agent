@@ -225,7 +225,8 @@ public class FeedbackLearningService {
         int expectedMinToolCalls = request.expectedMinToolCalls() == null ? current.expectedMinToolCalls() : Math.max(0, request.expectedMinToolCalls());
         int expectedTopK = request.expectedTopK() == null ? current.expectedTopK() : Math.max(1, Math.min(request.expectedTopK(), 20));
         String ragQuery = firstNonBlank(request.ragQuery(), current.ragQuery());
-        List<String> feedbackTags = request.feedbackTags() == null ? current.feedbackTags() : distinct(request.feedbackTags());
+        List<String> feedbackTags = request.feedbackTags() == null ? current.feedbackTags() : normalizeFeedbackTags(request.feedbackTags());
+        validateFeedbackTags(context.tenantId(), feedbackTags);
         String annotationNote = request.annotationNote() == null ? current.annotationNote() : request.annotationNote();
         Instant now = Instant.now();
         jdbcTemplate.update("""
@@ -558,6 +559,25 @@ public class FeedbackLearningService {
     private void checkFeedbackMaintainer(AgentUserContext context) {
         if (!context.hasAnyRole("ADMIN", "OPS_MANAGER", "OPERATIONS")) {
             throw new AccessDeniedException("当前用户没有反馈评测维护权限");
+        }
+    }
+
+    private void validateFeedbackTags(String tenantId, List<String> feedbackTags) {
+        if (feedbackTags == null || feedbackTags.isEmpty()) {
+            return;
+        }
+        List<String> enabledTags = jdbcTemplate.query("""
+                        SELECT tag_code
+                        FROM ai_feedback_tag_dictionary
+                        WHERE tenant_id = ? AND enabled = 1
+                        """,
+                (rs, rowNum) -> rs.getString("tag_code"),
+                tenantId);
+        List<String> invalidTags = feedbackTags.stream()
+                .filter(tag -> !enabledTags.contains(tag))
+                .toList();
+        if (!invalidTags.isEmpty()) {
+            throw new IllegalArgumentException("反馈标签未启用或不存在：" + String.join(",", invalidTags));
         }
     }
 
@@ -1043,6 +1063,12 @@ public class FeedbackLearningService {
             }
         }
         return new ArrayList<>(set);
+    }
+
+    private List<String> normalizeFeedbackTags(List<String> values) {
+        return distinct(values).stream()
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .toList();
     }
 
     private String joinLines(List<String> values) {
