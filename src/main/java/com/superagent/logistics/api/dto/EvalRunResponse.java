@@ -6,6 +6,8 @@ import java.util.List;
 public record EvalRunResponse(
         String runId,
         String tenantId,
+        String suiteId,
+        String suiteVersion,
         String status,
         int totalCases,
         int passedCases,

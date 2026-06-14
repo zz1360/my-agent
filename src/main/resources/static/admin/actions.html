@@ -803,6 +803,72 @@
           </div>
         </section>
 
+        <section class="panel" aria-labelledby="tagDictionaryTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="tagDictionaryTitle">反馈标签字典</h2>
+              <p>统一负反馈标签口径，供候选标注复用</p>
+            </div>
+            <span class="chip info" id="tagDictionaryCount">0 个</span>
+          </div>
+          <div class="mini-bars" id="tagDictionaryRows">
+            <div class="state">正在加载标签字典</div>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="qualityAlertTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="qualityAlertTitle">质量告警</h2>
+              <p>按规则发现负反馈、审批积压和 RAG 实验异常</p>
+            </div>
+            <button class="button compact" type="button" data-role="quality-alert-evaluate">评估规则</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>告警</th>
+                  <th>指标</th>
+                  <th>级别</th>
+                  <th>状态</th>
+                  <th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="qualityAlertBody">
+                <tr><td class="state" colspan="5">正在加载质量告警</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="mini-bars" id="qualityAlertRuleRows"></div>
+        </section>
+
+        <section class="panel" aria-labelledby="evalSuiteTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="evalSuiteTitle">评测集版本</h2>
+              <p>按版本管理回归评测用例集合</p>
+            </div>
+            <span class="chip info" id="evalSuiteCount">0 个</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>评测集</th>
+                  <th>版本</th>
+                  <th>用例数</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="evalSuiteBody">
+                <tr><td class="state" colspan="5">正在加载评测集</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="panel" aria-labelledby="feedbackTitle">
           <div class="panel-head">
             <div class="panel-title">
@@ -923,7 +989,11 @@
       latestFeedback: [],
       latestCandidates: [],
       latestQuality: null,
-      latestCandidateAudits: []
+      latestCandidateAudits: [],
+      latestFeedbackTags: [],
+      latestQualityAlerts: [],
+      latestQualityAlertRules: [],
+      latestEvalSuites: []
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -995,11 +1065,11 @@
 
     function statusChip(status) {
       const value = escapeHtml(status || "UNKNOWN");
-      const cls = status === "SUCCESS" || status === "APPROVED"
+      const cls = status === "SUCCESS" || status === "APPROVED" || status === "RESOLVED" || status === "ENABLED"
         ? "success"
-        : status === "FAILED" || status === "REJECTED"
+        : status === "FAILED" || status === "REJECTED" || status === "ERROR" || status === "OPEN"
           ? "fail"
-          : status === "DRAFT"
+          : status === "DRAFT" || status === "WARN"
             ? "warn"
             : "info";
       return `<span class="chip ${cls}">${value}</span>`;
@@ -1030,6 +1100,11 @@
     function formatRate(value) {
       if (value === undefined || value === null || Number.isNaN(Number(value))) return "--";
       return `${Math.round(Number(value) * 1000) / 10}%`;
+    }
+
+    function formatNumber(value) {
+      if (value === undefined || value === null || Number.isNaN(Number(value))) return "--";
+      return Math.round(Number(value) * 10000) / 10000;
     }
 
     function lines(values) {
@@ -1226,6 +1301,87 @@
           </td>
           <td><span class="mono">${escapeHtml(row.actorId || "-")}</span></td>
           <td>${escapeHtml(row.summary || "-")}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadFeedbackTags() {
+      const rows = await api(`/api/agent/quality/feedback-tags?${params({ enabledOnly: "true" })}`);
+      state.latestFeedbackTags = rows;
+      $("#tagDictionaryCount").textContent = `${rows.length} 个`;
+      if (!rows.length) {
+        $("#tagDictionaryRows").innerHTML = `<div class="state">暂无标签字典</div>`;
+        return;
+      }
+      $("#tagDictionaryRows").innerHTML = rows.map((row) => `
+        <div class="bar-row">
+          <span class="mono" title="${escapeHtml(row.tagName)}">${escapeHtml(row.tagCode)}</span>
+          <span class="muted">${escapeHtml(row.tagName)} · ${escapeHtml(row.category)}</span>
+          <span class="mono muted">${escapeHtml(row.sortOrder)}</span>
+        </div>
+      `).join("");
+    }
+
+    async function loadQualityAlerts() {
+      setLoading("#qualityAlertBody", 5, "正在加载质量告警");
+      const [alerts, rules] = await Promise.all([
+        api(`/api/agent/quality/alerts?${params({ limit: 20 })}`),
+        api(`/api/agent/quality/alert-rules?${params({ enabledOnly: "true" })}`)
+      ]);
+      state.latestQualityAlerts = alerts;
+      state.latestQualityAlertRules = rules;
+      if (!alerts.length) {
+        $("#qualityAlertBody").innerHTML = `<tr><td class="state" colspan="5">暂无质量告警</td></tr>`;
+      } else {
+        $("#qualityAlertBody").innerHTML = alerts.map((row) => `
+          <tr>
+            <td>
+              <div class="cell-main">
+                <span class="strong">${escapeHtml(row.summary || row.alertId)}</span>
+                <span class="mono muted">${escapeHtml(shortId(row.alertId))}</span>
+              </div>
+            </td>
+            <td><span class="mono">${escapeHtml(row.metricType)} ${escapeHtml(formatNumber(row.metricValue))}/${escapeHtml(formatNumber(row.thresholdValue))}</span></td>
+            <td>${statusChip(row.severity)}</td>
+            <td>${statusChip(row.status)}</td>
+            <td>${escapeHtml(formatDate(row.lastTriggeredAt))}</td>
+          </tr>
+        `).join("");
+      }
+      if (!rules.length) {
+        $("#qualityAlertRuleRows").innerHTML = `<div class="state">暂无告警规则</div>`;
+      } else {
+        $("#qualityAlertRuleRows").innerHTML = rules.map((row) => `
+          <div class="bar-row">
+            <span class="mono" title="${escapeHtml(row.ruleName)}">${escapeHtml(shortId(row.ruleId))}</span>
+            <span class="muted">${escapeHtml(row.metricType)} · ${escapeHtml(row.windowDays)} 天</span>
+            <span class="mono muted">${escapeHtml(formatNumber(row.thresholdValue))}</span>
+          </div>
+        `).join("");
+      }
+    }
+
+    async function loadEvalSuites() {
+      setLoading("#evalSuiteBody", 5, "正在加载评测集");
+      const rows = await api(`/api/agent/evals/suites?${params({ enabledOnly: "true" })}`);
+      state.latestEvalSuites = rows;
+      $("#evalSuiteCount").textContent = `${rows.length} 个`;
+      if (!rows.length) {
+        $("#evalSuiteBody").innerHTML = `<tr><td class="state" colspan="5">暂无评测集</td></tr>`;
+        return;
+      }
+      $("#evalSuiteBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>
+            <div class="cell-main">
+              <span class="strong">${escapeHtml(row.suiteName)}</span>
+              <span class="mono muted">${escapeHtml(row.suiteId)}</span>
+            </div>
+          </td>
+          <td><span class="mono">${escapeHtml(row.suiteVersion)}</span></td>
+          <td>${escapeHtml(row.caseCount)}</td>
+          <td>${statusChip(row.enabled ? "ENABLED" : "DISABLED")}</td>
+          <td><button class="button compact" type="button" data-suite-id="${escapeHtml(row.suiteId)}" data-role="eval-suite-run">运行</button></td>
         </tr>
       `).join("");
     }
@@ -1448,6 +1604,9 @@
         showToast("没有找到评测候选详情");
         return;
       }
+      const tagButtons = (state.latestFeedbackTags || []).map((tag) => `
+        <button class="button compact" type="button" data-role="candidate-tag-add" data-tag-code="${escapeHtml(tag.tagCode)}">${escapeHtml(tag.tagCode)}</button>
+      `).join("");
       $("#detailPanel").innerHTML = `
         <div class="detail-grid">
           <div class="detail-item">
@@ -1512,9 +1671,10 @@
             </label>
           </div>
           <label class="field">
-            <span>反馈标签</span>
+            <span>反馈标签（字典）</span>
             <textarea id="candidateFeedbackTags">${escapeHtml(lines(row.feedbackTags))}</textarea>
           </label>
+          <div class="chips">${tagButtons || '<span class="muted">暂无可用标签字典</span>'}</div>
           <label class="field">
             <span>标注备注</span>
             <textarea id="candidateAnnotationNote">${escapeHtml(row.annotationNote || "")}</textarea>
@@ -1633,6 +1793,32 @@
       await refreshAll();
     }
 
+    async function evaluateQualityAlerts() {
+      const result = await api(`/api/agent/quality/alerts/evaluate?${params()}`, {
+        method: "POST"
+      });
+      showToast(`告警评估完成：规则 ${result.evaluatedRules} 条，打开 ${result.openAlerts} 条，恢复 ${result.resolvedAlerts} 条`);
+      await loadQualityAlerts();
+    }
+
+    async function runEvalSuite(suiteId) {
+      const result = await api(`/api/agent/evals/suites/${encodeURIComponent(suiteId)}/run?${params()}`, {
+        method: "POST"
+      });
+      showToast(`评测集运行完成：${result.status}，通过 ${result.passedCases}/${result.totalCases}`);
+    }
+
+    function addCandidateTag(tagCode) {
+      const field = $("#candidateFeedbackTags");
+      if (!field || !tagCode) return;
+      const values = lineValues("#candidateFeedbackTags");
+      if (!values.includes(tagCode)) {
+        values.push(tagCode);
+      }
+      field.value = values.join("\n");
+      showToast(`已添加标签：${tagCode}`);
+    }
+
     async function refreshAll() {
       $("#envBadge").textContent = `${fields.tenantId.value.trim() || "T001"} · ${fields.roles.value.trim() || "OPS_MANAGER"}`;
       $("#refreshButton").disabled = true;
@@ -1649,6 +1835,16 @@
           loadFeedback().catch((error) => setError("#feedbackBody", 4, error)),
           loadCandidates().catch((error) => setError("#candidateBody", 5, error)),
           loadCandidateAudits().catch((error) => setError("#candidateAuditBody", 5, error)),
+          loadFeedbackTags().catch((error) => {
+            showToast(`标签字典加载失败：${error.message}`);
+            $("#tagDictionaryRows").innerHTML = `<div class="state">标签字典加载失败</div>`;
+          }),
+          loadQualityAlerts().catch((error) => {
+            showToast(`质量告警加载失败：${error.message}`);
+            setError("#qualityAlertBody", 5, error);
+            $("#qualityAlertRuleRows").innerHTML = `<div class="state">告警规则加载失败</div>`;
+          }),
+          loadEvalSuites().catch((error) => setError("#evalSuiteBody", 5, error)),
           loadFeedbackQuality().catch((error) => {
             showToast(`反馈质量指标加载失败：${error.message}`);
             renderBars("#feedbackReasonBars", "反馈原因", []);
@@ -1689,6 +1885,12 @@
           await runCandidateRagExperiment(target.dataset.candidateId);
         } else if (target.dataset.role === "candidate-promote") {
           await promoteCandidate(target.dataset.candidateId);
+        } else if (target.dataset.role === "candidate-tag-add") {
+          addCandidateTag(target.dataset.tagCode);
+        } else if (target.dataset.role === "quality-alert-evaluate") {
+          await evaluateQualityAlerts();
+        } else if (target.dataset.role === "eval-suite-run") {
+          await runEvalSuite(target.dataset.suiteId);
         }
       } catch (error) {
         showToast(error.message);

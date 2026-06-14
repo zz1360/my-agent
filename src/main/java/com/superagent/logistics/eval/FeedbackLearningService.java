@@ -38,6 +38,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -212,6 +213,7 @@ public class FeedbackLearningService {
         if ("REJECTED".equals(current.reviewStatus())) {
             throw new IllegalArgumentException("已驳回的评测候选不能继续标注");
         }
+        EvalCaseCandidateResponse before = current;
         String evalType = request.evalType() == null || request.evalType().isBlank()
                 ? current.evalType()
                 : resolveEvalType(request.evalType(), current.reason());
@@ -251,11 +253,11 @@ public class FeedbackLearningService {
                 context.tenantId(),
                 candidateId);
         EvalCaseCandidateResponse updated = getCandidate(context.tenantId(), candidateId);
-        writeCandidateAudit(context, updated, "CANDIDATE_ANNOTATED", "保存人工标注与期望结果", Map.of(
+        writeCandidateAudit(context, updated, "CANDIDATE_ANNOTATED", "保存人工标注与期望结果", auditDetails(before, updated, Map.of(
                 "evalType", updated.evalType(),
                 "expectedTopK", updated.expectedTopK(),
                 "feedbackTags", updated.feedbackTags()
-        ));
+        )));
         return updated;
     }
 
@@ -263,7 +265,7 @@ public class FeedbackLearningService {
         AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
         permissionService.checkBusinessReadable(context);
         checkFeedbackMaintainer(context);
-        getCandidate(context.tenantId(), candidateId);
+        EvalCaseCandidateResponse before = getCandidate(context.tenantId(), candidateId);
         String reviewStatus = normalizeReviewStatus(request.reviewStatus());
         Instant now = Instant.now();
         jdbcTemplate.update("""
@@ -279,10 +281,10 @@ public class FeedbackLearningService {
                 context.tenantId(),
                 candidateId);
         EvalCaseCandidateResponse reviewed = getCandidate(context.tenantId(), candidateId);
-        writeCandidateAudit(context, reviewed, reviewAuditType(reviewStatus), "候选审批状态变更为 " + reviewStatus, Map.of(
+        writeCandidateAudit(context, reviewed, reviewAuditType(reviewStatus), "候选审批状态变更为 " + reviewStatus, auditDetails(before, reviewed, Map.of(
                 "reviewStatus", reviewStatus,
                 "comment", firstNonBlank(request.comment(), "")
-        ));
+        )));
         return reviewed;
     }
 
@@ -290,22 +292,22 @@ public class FeedbackLearningService {
         AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
         permissionService.checkBusinessReadable(context);
         checkFeedbackMaintainer(context);
-        EvalCaseCandidateResponse candidate = getCandidate(context.tenantId(), candidateId);
-        if ("REJECTED".equals(candidate.reviewStatus())) {
+        EvalCaseCandidateResponse before = getCandidate(context.tenantId(), candidateId);
+        if ("REJECTED".equals(before.reviewStatus())) {
             throw new IllegalArgumentException("已驳回的评测候选不能转为正式评测用例");
         }
-        if (Boolean.TRUE.equals(request.enabled()) && !"APPROVED".equals(candidate.reviewStatus())) {
+        if (Boolean.TRUE.equals(request.enabled()) && !"APPROVED".equals(before.reviewStatus())) {
             throw new IllegalArgumentException("只有审批通过的评测候选才能启用为正式评测用例");
         }
-        String caseId = firstNonBlank(request.caseId(), "feedback-" + candidate.candidateId().replace("cand-", ""));
-        List<String> expectedContains = overrideOrDefault(request.expectedContains(), candidate.expectedContains());
-        List<String> expectedCitations = overrideOrDefault(request.expectedCitations(), candidate.expectedCitations());
-        List<String> expectedRagDocIds = overrideOrDefault(request.expectedRagDocIds(), candidate.expectedRagDocIds());
-        List<String> expectedRagChunkIds = overrideOrDefault(request.expectedRagChunkIds(), candidate.expectedRagChunkIds());
-        int expectedMinToolCalls = request.expectedMinToolCalls() == null ? candidate.expectedMinToolCalls() : Math.max(0, request.expectedMinToolCalls());
-        int expectedTopK = request.expectedTopK() == null ? candidate.expectedTopK() : Math.max(1, Math.min(request.expectedTopK(), 20));
-        String ragQuery = firstNonBlank(request.ragQuery(), candidate.ragQuery());
-        String requestJson = requestJson(context, candidate, expectedTopK, ragQuery);
+        String caseId = firstNonBlank(request.caseId(), "feedback-" + before.candidateId().replace("cand-", ""));
+        List<String> expectedContains = overrideOrDefault(request.expectedContains(), before.expectedContains());
+        List<String> expectedCitations = overrideOrDefault(request.expectedCitations(), before.expectedCitations());
+        List<String> expectedRagDocIds = overrideOrDefault(request.expectedRagDocIds(), before.expectedRagDocIds());
+        List<String> expectedRagChunkIds = overrideOrDefault(request.expectedRagChunkIds(), before.expectedRagChunkIds());
+        int expectedMinToolCalls = request.expectedMinToolCalls() == null ? before.expectedMinToolCalls() : Math.max(0, request.expectedMinToolCalls());
+        int expectedTopK = request.expectedTopK() == null ? before.expectedTopK() : Math.max(1, Math.min(request.expectedTopK(), 20));
+        String ragQuery = firstNonBlank(request.ragQuery(), before.ragQuery());
+        String requestJson = requestJson(context, before, expectedTopK, ragQuery);
         Instant now = Instant.now();
         Integer count = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM ai_eval_case
@@ -321,9 +323,9 @@ public class FeedbackLearningService {
                             """,
                     context.tenantId(),
                     caseId,
-                    firstNonBlank(request.name(), "反馈样本：" + excerpt(candidate.sourceQuestion(), 48)),
-                    candidate.endpoint(),
-                    candidate.evalType(),
+                    firstNonBlank(request.name(), "反馈样本：" + excerpt(before.sourceQuestion(), 48)),
+                    before.endpoint(),
+                    before.evalType(),
                     context.userId(),
                     String.join(",", context.roles()),
                     requestJson,
@@ -350,10 +352,10 @@ public class FeedbackLearningService {
                 context.tenantId(),
                 candidateId);
         EvalCaseCandidateResponse promoted = getCandidate(context.tenantId(), candidateId);
-        writeCandidateAudit(context, promoted, "EVAL_CASE_PROMOTED", "评测候选已沉淀为正式评测用例", Map.of(
+        writeCandidateAudit(context, promoted, "EVAL_CASE_PROMOTED", "评测候选已沉淀为正式评测用例", auditDetails(before, promoted, Map.of(
                 "evalCaseId", firstNonBlank(promoted.evalCaseId(), ""),
                 "enabled", Boolean.TRUE.equals(request.enabled())
-        ));
+        )));
         return promoted;
     }
 
@@ -362,27 +364,27 @@ public class FeedbackLearningService {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
         permissionService.checkBusinessReadable(context);
         checkFeedbackMaintainer(context);
-        EvalCaseCandidateResponse candidate = getCandidate(context.tenantId(), candidateId);
-        if ("REJECTED".equals(candidate.reviewStatus())) {
+        EvalCaseCandidateResponse before = getCandidate(context.tenantId(), candidateId);
+        if ("REJECTED".equals(before.reviewStatus())) {
             throw new IllegalArgumentException("已驳回的评测候选不能创建 RAG 实验");
         }
-        if (candidate.expectedRagDocIds().isEmpty() && candidate.expectedRagChunkIds().isEmpty()) {
+        if (before.expectedRagDocIds().isEmpty() && before.expectedRagChunkIds().isEmpty()) {
             throw new IllegalArgumentException("候选样本缺少期望引用，无法创建 RAG 实验");
         }
-        String experimentId = candidate.ragExperimentId() == null || candidate.ragExperimentId().isBlank()
-                ? "raglab-fb-" + candidate.candidateId().replace("cand-", "")
-                : candidate.ragExperimentId();
+        String experimentId = before.ragExperimentId() == null || before.ragExperimentId().isBlank()
+                ? "raglab-fb-" + before.candidateId().replace("cand-", "")
+                : before.ragExperimentId();
         RagExperimentResponse experiment = ragExperimentService.upsert(new RagExperimentRequest(
                 context.tenantId(),
                 context.userId(),
                 new ArrayList<>(context.roles()),
                 experimentId,
-                "反馈样本 RAG 对比：" + excerpt(candidate.sourceQuestion(), 42),
-                "由反馈 " + candidate.feedbackId() + " 自动生成，用于诊断引用或检索质量问题。",
-                firstNonBlank(candidate.ragQuery(), candidate.sourceQuestion()),
-                candidate.expectedRagDocIds(),
-                candidate.expectedRagChunkIds(),
-                candidate.expectedTopK(),
+                "反馈样本 RAG 对比：" + excerpt(before.sourceQuestion(), 42),
+                "由反馈 " + before.feedbackId() + " 自动生成，用于诊断引用或检索质量问题。",
+                firstNonBlank(before.ragQuery(), before.sourceQuestion()),
+                before.expectedRagDocIds(),
+                before.expectedRagChunkIds(),
+                before.expectedTopK(),
                 List.of("KEYWORD_ONLY", "HYBRID_RULE", "HYBRID_RERANKER"),
                 true
         ));
@@ -401,11 +403,11 @@ public class FeedbackLearningService {
                 context.tenantId(),
                 candidateId);
         EvalCaseCandidateResponse updated = getCandidate(context.tenantId(), candidateId);
-        writeCandidateAudit(context, updated, "RAG_EXPERIMENT_CREATED", "由候选创建 RAG 实验", Map.of(
+        writeCandidateAudit(context, updated, "RAG_EXPERIMENT_CREATED", "由候选创建 RAG 实验", auditDetails(before, updated, Map.of(
                 "experimentId", experiment.experimentId(),
                 "runNow", runNow,
                 "runCount", runs.size()
-        ));
+        )));
         return new FeedbackRagExperimentResponse(updated, experiment, runs);
     }
 
@@ -677,6 +679,67 @@ public class FeedbackLearningService {
                 summary,
                 toJson(details),
                 Timestamp.from(now));
+    }
+
+    private Map<String, Object> auditDetails(EvalCaseCandidateResponse before, EvalCaseCandidateResponse after,
+                                             Map<String, ?> extra) {
+        Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.putAll(extra);
+        details.put("changedFields", changedFields(before, after));
+        details.put("before", candidateSnapshot(before));
+        details.put("after", candidateSnapshot(after));
+        return details;
+    }
+
+    private Map<String, Object> changedFields(EvalCaseCandidateResponse before, EvalCaseCandidateResponse after) {
+        Map<String, Object> changes = new java.util.LinkedHashMap<>();
+        putChange(changes, "endpoint", before.endpoint(), after.endpoint());
+        putChange(changes, "evalType", before.evalType(), after.evalType());
+        putChange(changes, "expectedContains", before.expectedContains(), after.expectedContains());
+        putChange(changes, "expectedCitations", before.expectedCitations(), after.expectedCitations());
+        putChange(changes, "expectedRagDocIds", before.expectedRagDocIds(), after.expectedRagDocIds());
+        putChange(changes, "expectedRagChunkIds", before.expectedRagChunkIds(), after.expectedRagChunkIds());
+        putChange(changes, "expectedMinToolCalls", before.expectedMinToolCalls(), after.expectedMinToolCalls());
+        putChange(changes, "expectedTopK", before.expectedTopK(), after.expectedTopK());
+        putChange(changes, "ragQuery", before.ragQuery(), after.ragQuery());
+        putChange(changes, "status", before.status(), after.status());
+        putChange(changes, "feedbackTags", before.feedbackTags(), after.feedbackTags());
+        putChange(changes, "annotationNote", before.annotationNote(), after.annotationNote());
+        putChange(changes, "reviewStatus", before.reviewStatus(), after.reviewStatus());
+        putChange(changes, "reviewerId", before.reviewerId(), after.reviewerId());
+        putChange(changes, "reviewComment", before.reviewComment(), after.reviewComment());
+        putChange(changes, "evalCaseId", before.evalCaseId(), after.evalCaseId());
+        putChange(changes, "ragExperimentId", before.ragExperimentId(), after.ragExperimentId());
+        return changes;
+    }
+
+    private void putChange(Map<String, Object> changes, String field, Object before, Object after) {
+        if (!Objects.equals(before, after)) {
+            changes.put(field, Map.of("before", before == null ? "" : before, "after", after == null ? "" : after));
+        }
+    }
+
+    private Map<String, Object> candidateSnapshot(EvalCaseCandidateResponse candidate) {
+        Map<String, Object> snapshot = new java.util.LinkedHashMap<>();
+        snapshot.put("candidateId", candidate.candidateId());
+        snapshot.put("feedbackId", candidate.feedbackId());
+        snapshot.put("endpoint", candidate.endpoint());
+        snapshot.put("evalType", candidate.evalType());
+        snapshot.put("expectedContains", candidate.expectedContains());
+        snapshot.put("expectedCitations", candidate.expectedCitations());
+        snapshot.put("expectedRagDocIds", candidate.expectedRagDocIds());
+        snapshot.put("expectedRagChunkIds", candidate.expectedRagChunkIds());
+        snapshot.put("expectedTopK", candidate.expectedTopK());
+        snapshot.put("ragQuery", firstNonBlank(candidate.ragQuery(), ""));
+        snapshot.put("status", candidate.status());
+        snapshot.put("feedbackTags", candidate.feedbackTags());
+        snapshot.put("annotationNote", firstNonBlank(candidate.annotationNote(), ""));
+        snapshot.put("reviewStatus", firstNonBlank(candidate.reviewStatus(), ""));
+        snapshot.put("reviewerId", firstNonBlank(candidate.reviewerId(), ""));
+        snapshot.put("reviewComment", firstNonBlank(candidate.reviewComment(), ""));
+        snapshot.put("evalCaseId", firstNonBlank(candidate.evalCaseId(), ""));
+        snapshot.put("ragExperimentId", firstNonBlank(candidate.ragExperimentId(), ""));
+        return snapshot;
     }
 
     private String findPreviousUserQuestion(String tenantId, String conversationId, Timestamp before) {

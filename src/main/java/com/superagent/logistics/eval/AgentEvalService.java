@@ -11,6 +11,7 @@ import com.superagent.logistics.api.dto.CustomerDiagnosisResponse;
 import com.superagent.logistics.api.dto.EvalCaseResponse;
 import com.superagent.logistics.api.dto.EvalCaseResultResponse;
 import com.superagent.logistics.api.dto.EvalRunResponse;
+import com.superagent.logistics.api.dto.EvalSuiteResponse;
 import com.superagent.logistics.api.dto.ToolCallSummary;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
@@ -59,6 +60,7 @@ public class AgentEvalService implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         seedDefaultCases();
+        seedDefaultSuites();
     }
 
     public List<EvalCaseResponse> listCases(String tenantId, boolean enabledOnly) {
@@ -82,13 +84,65 @@ public class AgentEvalService implements ApplicationRunner {
                 WHERE tenant_id = ? AND enabled = 1
                 ORDER BY case_id
                 """, this::mapInternalCase, resolvedTenant);
+        return runCases(resolvedTenant, cases, null, null);
+    }
+
+    public List<EvalSuiteResponse> listSuites(String tenantId, boolean enabledOnly) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT s.*, COUNT(sc.case_id) AS case_count
+                FROM ai_eval_suite s
+                LEFT JOIN ai_eval_suite_case sc ON s.tenant_id = sc.tenant_id AND s.suite_id = sc.suite_id
+                WHERE s.tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(resolveTenant(tenantId));
+        if (enabledOnly) {
+            sql.append(" AND s.enabled = 1");
+        }
+        sql.append("""
+                 GROUP BY s.id, s.tenant_id, s.suite_id, s.suite_name, s.suite_version,
+                          s.description, s.enabled, s.created_at, s.updated_at
+                 ORDER BY s.updated_at DESC, s.suite_id
+                """);
+        return jdbcTemplate.query(sql.toString(), this::mapSuite, args.toArray());
+    }
+
+    public EvalRunResponse runSuite(String tenantId, String suiteId) {
+        String resolvedTenant = resolveTenant(tenantId);
+        EvalSuiteResponse suite = findSuite(resolvedTenant, suiteId);
+        if (!suite.enabled()) {
+            throw new IllegalArgumentException("评测集已停用：" + suiteId);
+        }
+        List<EvalCase> cases = jdbcTemplate.query("""
+                SELECT c.*
+                FROM ai_eval_suite_case sc
+                JOIN ai_eval_case c ON sc.tenant_id = c.tenant_id AND sc.case_id = c.case_id
+                WHERE sc.tenant_id = ? AND sc.suite_id = ? AND c.enabled = 1
+                ORDER BY sc.sort_order, c.case_id
+                """, this::mapInternalCase, resolvedTenant, suiteId);
+        return runCases(resolvedTenant, cases, suite.suiteId(), suite.suiteVersion());
+    }
+
+    private EvalRunResponse runCases(String resolvedTenant, List<EvalCase> cases, String suiteId, String suiteVersion) {
         String runId = "eval-" + UUID.randomUUID().toString().substring(0, 8);
         Instant startedAt = Instant.now();
         jdbcTemplate.update("""
-                INSERT INTO ai_eval_run
-                (tenant_id, run_id, status, total_cases, passed_cases, failed_cases, model_provider, started_at, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, resolvedTenant, runId, "RUNNING", cases.size(), 0, 0, null, Timestamp.from(startedAt), null);
+                        INSERT INTO ai_eval_run
+                        (tenant_id, run_id, suite_id, suite_version, status, total_cases, passed_cases,
+                         failed_cases, model_provider, started_at, finished_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                resolvedTenant,
+                runId,
+                suiteId,
+                suiteVersion,
+                "RUNNING",
+                cases.size(),
+                0,
+                0,
+                null,
+                Timestamp.from(startedAt),
+                null);
 
         int passed = 0;
         int failed = 0;
@@ -133,6 +187,21 @@ public class AgentEvalService implements ApplicationRunner {
                 """, (rs, rowNum) -> mapRun(rs, findResults(runId)), runId);
         return runs.stream().findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("未找到评测运行：" + runId));
+    }
+
+    private EvalSuiteResponse findSuite(String tenantId, String suiteId) {
+        return jdbcTemplate.query("""
+                        SELECT s.*, COUNT(sc.case_id) AS case_count
+                        FROM ai_eval_suite s
+                        LEFT JOIN ai_eval_suite_case sc ON s.tenant_id = sc.tenant_id AND s.suite_id = sc.suite_id
+                        WHERE s.tenant_id = ? AND s.suite_id = ?
+                        GROUP BY s.id, s.tenant_id, s.suite_id, s.suite_name, s.suite_version,
+                                 s.description, s.enabled, s.created_at, s.updated_at
+                        """,
+                this::mapSuite,
+                tenantId,
+                suiteId).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("未找到评测集：" + suiteId));
     }
 
     private EvalCaseExecution execute(EvalCase evalCase) {
@@ -313,6 +382,17 @@ public class AgentEvalService implements ApplicationRunner {
                 "冷链运输温度超过 10C 后客服应该怎么处理？", null, now);
     }
 
+    private void seedDefaultSuites() {
+        Instant now = Instant.now();
+        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v1.7",
+                "覆盖核心问答、客户诊断、提示词注入和 RAG 检索质量的默认回归套件。", now);
+        insertSuiteCase("T001", "suite-logistics-regression", "eval-delay-compensation", 10, now);
+        insertSuiteCase("T001", "suite-logistics-regression", "eval-customer-diagnosis", 20, now);
+        insertSuiteCase("T001", "suite-logistics-regression", "eval-prompt-injection", 30, now);
+        insertSuiteCase("T001", "suite-logistics-regression", "rag-delay-policy-hybrid", 40, now);
+        insertSuiteCase("T001", "suite-logistics-regression", "rag-cold-chain-policy-hybrid", 50, now);
+    }
+
     private void insertCase(String tenantId, String caseId, String name, String endpoint, String evalType, String requestJson,
                             String expectedContains, String expectedCitations, String expectedRagDocIds,
                             String expectedRagChunkIds, int expectedMinToolCalls, int expectedTopK,
@@ -335,6 +415,50 @@ public class AgentEvalService implements ApplicationRunner {
                 expectedMinToolCalls, expectedTopK, ragQuery, riskLevel, true, Timestamp.from(now), Timestamp.from(now));
     }
 
+    private void insertSuite(String tenantId, String suiteId, String suiteName, String suiteVersion,
+                             String description, Instant now) {
+        Integer count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM ai_eval_suite
+                WHERE tenant_id = ? AND suite_id = ?
+                """, Integer.class, tenantId, suiteId);
+        if (count != null && count > 0) {
+            return;
+        }
+        jdbcTemplate.update("""
+                        INSERT INTO ai_eval_suite
+                        (tenant_id, suite_id, suite_name, suite_version, description, enabled, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                tenantId,
+                suiteId,
+                suiteName,
+                suiteVersion,
+                description,
+                true,
+                Timestamp.from(now),
+                Timestamp.from(now));
+    }
+
+    private void insertSuiteCase(String tenantId, String suiteId, String caseId, int sortOrder, Instant now) {
+        Integer count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM ai_eval_suite_case
+                WHERE tenant_id = ? AND suite_id = ? AND case_id = ?
+                """, Integer.class, tenantId, suiteId, caseId);
+        if (count != null && count > 0) {
+            return;
+        }
+        jdbcTemplate.update("""
+                        INSERT INTO ai_eval_suite_case
+                        (tenant_id, suite_id, case_id, sort_order, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                tenantId,
+                suiteId,
+                caseId,
+                sortOrder,
+                Timestamp.from(now));
+    }
+
     private EvalCaseResponse mapCase(ResultSet rs, int rowNum) throws SQLException {
         return new EvalCaseResponse(
                 rs.getString("case_id"),
@@ -353,6 +477,19 @@ public class AgentEvalService implements ApplicationRunner {
                 rs.getString("rag_query"),
                 rs.getString("risk_level"),
                 rs.getBoolean("enabled"),
+                rs.getTimestamp("created_at").toInstant(),
+                rs.getTimestamp("updated_at").toInstant()
+        );
+    }
+
+    private EvalSuiteResponse mapSuite(ResultSet rs, int rowNum) throws SQLException {
+        return new EvalSuiteResponse(
+                rs.getString("suite_id"),
+                rs.getString("suite_name"),
+                rs.getString("suite_version"),
+                rs.getString("description"),
+                rs.getBoolean("enabled"),
+                rs.getInt("case_count"),
                 rs.getTimestamp("created_at").toInstant(),
                 rs.getTimestamp("updated_at").toInstant()
         );
@@ -380,6 +517,8 @@ public class AgentEvalService implements ApplicationRunner {
         return new EvalRunResponse(
                 rs.getString("run_id"),
                 rs.getString("tenant_id"),
+                rs.getString("suite_id"),
+                rs.getString("suite_version"),
                 rs.getString("status"),
                 rs.getInt("total_cases"),
                 rs.getInt("passed_cases"),
