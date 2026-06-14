@@ -32,7 +32,7 @@ mvn -Dmaven.repo.local=/Users/zhangzhuang/Documents/develop/maven_repository spr
 
 启动后可访问 `http://localhost:8080/chat.html` 打开轻量聊天页，也可以访问 `http://localhost:8080/admin/actions.html` 打开轻量管理台。
 
-云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。v0.6 知识库运营闭环见 [docs/v06-knowledge-ops-workflow.md](docs/v06-knowledge-ops-workflow.md)。v0.7 RAG 检索质量实验台见 [docs/v07-rag-experiment-lab.md](docs/v07-rag-experiment-lab.md)。v0.8 Agent 动作草稿与人工复核见 [docs/v08-agent-action-workflow.md](docs/v08-agent-action-workflow.md)。v0.9 动作执行适配器与低风险自动化见 [docs/v09-action-execution-automation.md](docs/v09-action-execution-automation.md)。v1.0 业务执行闭环、幂等与重试见 [docs/v10-business-execution-idempotency-retry.md](docs/v10-business-execution-idempotency-retry.md)。v1.1 执行可观测性与管理后台接口见 [docs/v11-execution-observability-admin.md](docs/v11-execution-observability-admin.md)。v1.2 轻量管理页面见 [docs/v12-action-admin-console.md](docs/v12-action-admin-console.md)。v1.3 对话历史、流式输出与反馈闭环见 [docs/v13-conversation-stream-feedback.md](docs/v13-conversation-stream-feedback.md)。v1.4 反馈样本池、评测候选与 RAG 实验闭环见 [docs/v14-feedback-eval-rag-loop.md](docs/v14-feedback-eval-rag-loop.md)。v1.5 评测候选标注、审批与质量看板见 [docs/v15-candidate-annotation-quality-dashboard.md](docs/v15-candidate-annotation-quality-dashboard.md)。
+云端 MySQL 说明见 [docs/mysql-cloud.md](docs/mysql-cloud.md)。DeepSeek 配置见 [docs/deepseek-chatclient.md](docs/deepseek-chatclient.md)。本机真实向量库选择 PGVector，启动方式见 [docs/pgvector-local.md](docs/pgvector-local.md)。v0.3 知识库运营、Flyway 和评测见 [docs/v03-ops-flyway-eval.md](docs/v03-ops-flyway-eval.md)。v0.4 本地真实 embedding、混合召回、rerank 和 RAG 评测见 [docs/v04-local-embedding-hybrid-rag-eval.md](docs/v04-local-embedding-hybrid-rag-eval.md)。v0.5 本地 reranker 和 RAG 指标升级见 [docs/v05-local-reranker-rag-metrics.md](docs/v05-local-reranker-rag-metrics.md)。v0.6 知识库运营闭环见 [docs/v06-knowledge-ops-workflow.md](docs/v06-knowledge-ops-workflow.md)。v0.7 RAG 检索质量实验台见 [docs/v07-rag-experiment-lab.md](docs/v07-rag-experiment-lab.md)。v0.8 Agent 动作草稿与人工复核见 [docs/v08-agent-action-workflow.md](docs/v08-agent-action-workflow.md)。v0.9 动作执行适配器与低风险自动化见 [docs/v09-action-execution-automation.md](docs/v09-action-execution-automation.md)。v1.0 业务执行闭环、幂等与重试见 [docs/v10-business-execution-idempotency-retry.md](docs/v10-business-execution-idempotency-retry.md)。v1.1 执行可观测性与管理后台接口见 [docs/v11-execution-observability-admin.md](docs/v11-execution-observability-admin.md)。v1.2 轻量管理页面见 [docs/v12-action-admin-console.md](docs/v12-action-admin-console.md)。v1.3 对话历史、流式输出与反馈闭环见 [docs/v13-conversation-stream-feedback.md](docs/v13-conversation-stream-feedback.md)。v1.4 反馈样本池、评测候选与 RAG 实验闭环见 [docs/v14-feedback-eval-rag-loop.md](docs/v14-feedback-eval-rag-loop.md)。v1.5 评测候选标注、审批与质量看板见 [docs/v15-candidate-annotation-quality-dashboard.md](docs/v15-candidate-annotation-quality-dashboard.md)。v1.6 质量趋势与候选审计见 [docs/v16-quality-trend-audit.md](docs/v16-quality-trend-audit.md)。
 
 ## 示例请求
 
@@ -73,7 +73,7 @@ curl -s http://localhost:8080/api/agent/chat \
 ## API
 
 - `GET /chat.html`：轻量聊天页，支持流式回答、历史会话、反馈、引用、工具调用、动作草稿生成和审计 trace
-- `GET /admin/actions.html`：轻量动作管理台页面，聚合动作列表、执行日志、重试队列、指标、业务回链、反馈样本池、评测候选池和反馈质量看板
+- `GET /admin/actions.html`：轻量动作管理台页面，聚合动作列表、执行日志、重试队列、指标、业务回链、反馈样本池、评测候选池、反馈质量看板、质量趋势和候选操作审计
 - `POST /api/agent/chat`：自然语言问答
 - `POST /api/agent/chat/stream`：SSE 流式问答，输出状态、回答增量和最终完整响应
 - `GET /api/agent/conversations`：查询当前用户的历史会话列表
@@ -86,7 +86,8 @@ curl -s http://localhost:8080/api/agent/chat \
 - `POST /api/agent/eval-candidates/{candidateId}/review`：审批评测候选，支持通过或驳回
 - `POST /api/agent/eval-candidates/{candidateId}/rag-experiment`：由评测候选创建并可立即运行 RAG 实验
 - `POST /api/agent/eval-candidates/{candidateId}/promote`：把评测候选沉淀为正式评测用例
-- `GET /api/agent/feedback/quality-metrics`：查看负反馈率、候选转化率、审批通过率和实验通过率
+- `GET /api/agent/feedback/quality-metrics`：查看负反馈率、候选转化率、审批通过率和实验通过率，支持 `from/to` 日期窗口并返回每日趋势
+- `GET /api/agent/eval-candidate-audits`：查询评测候选创建、标注、审批、RAG 实验和转评测的操作审计
 - `POST /api/agent/customer-diagnosis`：客户异常诊断闭环，返回结构化指标、归因、SLA/赔付候选、引用和审计 trace
 - `POST /api/agent/actions/from-diagnosis`：根据客户诊断 trace 生成客户回复、工单备注、赔付复核等动作草稿
 - `GET /api/agent/actions`：查询动作草稿，可按客户和状态过滤
@@ -128,5 +129,7 @@ curl -s http://localhost:8080/api/agent/chat \
 知识检索默认使用本机 `BAAI/bge-small-zh-v1.5` ONNX 模型生成 512 维向量，并使用本机 `Xenova/bge-reranker-base` ONNX 模型做候选精排，不调用云端 embedding 或 reranker 服务。集成测试为了速度和稳定性仍使用 hashing embedding 和 lightweight reranker；真实本地模型链路可用专门单测显式验证。
 
 `agent.demo.reset-on-start` 默认是 `false`，云端 MySQL 不会在每次启动时被清空。测试环境仍设置为 `true`，用于每次测试前重建稳定的模拟数据。
+
+v1.6 开始，反馈质量看板支持日期窗口和每日趋势。候选创建、人工标注、审批、RAG 实验创建和转正式评测都会写入 `ai_eval_case_candidate_audit`，用于追踪反馈样本是如何变成可回归的评测资产。
 
 v0.2 客户异常诊断闭环见 [docs/customer-diagnosis-v02.md](docs/customer-diagnosis-v02.md)。

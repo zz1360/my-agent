@@ -6,6 +6,7 @@ import com.superagent.logistics.api.dto.EvalCaseCandidateCreateRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidatePromoteRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidateReviewRequest;
 import com.superagent.logistics.api.dto.EvalCaseCandidateResponse;
+import com.superagent.logistics.api.dto.FeedbackCandidateAuditResponse;
 import com.superagent.logistics.api.dto.FeedbackQualityMetricsResponse;
 import com.superagent.logistics.api.dto.FeedbackRagExperimentResponse;
 import com.superagent.logistics.eval.FeedbackLearningService;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -52,8 +54,20 @@ public class FeedbackLearningController {
     @GetMapping("/feedback/quality-metrics")
     public FeedbackQualityMetricsResponse qualityMetrics(@RequestParam(required = false) String tenantId,
                                                          @RequestParam(required = false) String userId,
-                                                         @RequestParam(required = false) List<String> roles) {
-        return feedbackLearningService.qualityMetrics(tenantId, userId, roles);
+                                                         @RequestParam(required = false) List<String> roles,
+                                                         @RequestParam(required = false) LocalDate from,
+                                                         @RequestParam(required = false) LocalDate to) {
+        return feedbackLearningService.qualityMetrics(tenantId, userId, roles, from, to);
+    }
+
+    @GetMapping("/eval-candidate-audits")
+    public List<FeedbackCandidateAuditResponse> evalCandidateAudits(@RequestParam(required = false) String tenantId,
+                                                                    @RequestParam(required = false) String userId,
+                                                                    @RequestParam(required = false) List<String> roles,
+                                                                    @RequestParam(required = false) String candidateId,
+                                                                    @RequestParam(required = false) String actionType,
+                                                                    @RequestParam(defaultValue = "30") int limit) {
+        return feedbackLearningService.listCandidateAudits(tenantId, userId, roles, candidateId, actionType, limit);
     }
 
     @PostMapping("/feedback/{feedbackId}/eval-candidate")

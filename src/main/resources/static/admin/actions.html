@@ -447,6 +447,46 @@
       padding: 12px 14px 14px;
     }
 
+    .trend-list {
+      display: grid;
+      gap: 8px;
+      padding: 12px 14px 14px;
+    }
+
+    .trend-row {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr) 88px;
+      gap: 8px;
+      align-items: center;
+      min-height: 26px;
+      color: #344054;
+      font-size: 12px;
+    }
+
+    .trend-meter {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .trend-track {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #edf1f5;
+    }
+
+    .trend-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--brand);
+    }
+
+    .trend-fill.warn {
+      background: var(--amber);
+    }
+
     .bar-row {
       display: grid;
       grid-template-columns: 116px minmax(0, 1fr) 52px;
@@ -535,6 +575,10 @@
 
       .bar-row {
         grid-template-columns: 92px minmax(0, 1fr) 42px;
+      }
+
+      .trend-row {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -747,6 +791,18 @@
           </div>
         </section>
 
+        <section class="panel" aria-labelledby="qualityTrendTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="qualityTrendTitle">质量趋势</h2>
+              <p id="qualityTrendRange">按天观察负反馈、候选转化和审批表现</p>
+            </div>
+          </div>
+          <div class="trend-list" id="qualityTrendRows">
+            <div class="state">正在加载质量趋势</div>
+          </div>
+        </section>
+
         <section class="panel" aria-labelledby="feedbackTitle">
           <div class="panel-head">
             <div class="panel-title">
@@ -798,6 +854,32 @@
           </div>
         </section>
 
+        <section class="panel" aria-labelledby="candidateAuditTitle">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2 id="candidateAuditTitle">候选操作审计</h2>
+              <p>追踪候选从反馈进入评测资产的关键动作</p>
+            </div>
+            <span class="chip info" id="candidateAuditCount">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>动作</th>
+                  <th>候选</th>
+                  <th>操作人</th>
+                  <th>摘要</th>
+                </tr>
+              </thead>
+              <tbody id="candidateAuditBody">
+                <tr><td class="state" colspan="5">正在加载候选操作审计</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="panel" aria-labelledby="metricsTitle">
           <div class="panel-head">
             <div class="panel-title">
@@ -840,7 +922,8 @@
       latestRetryQueue: [],
       latestFeedback: [],
       latestCandidates: [],
-      latestQuality: null
+      latestQuality: null,
+      latestCandidateAudits: []
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -937,6 +1020,11 @@
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
       return date.toLocaleString("zh-CN", { hour12: false });
+    }
+
+    function formatShortDate(value) {
+      if (!value || value.length < 10) return value || "-";
+      return value.slice(5);
     }
 
     function formatRate(value) {
@@ -1087,6 +1175,59 @@
       renderBars("#feedbackTagBars", "反馈标签", metrics.byTag || []);
       renderBars("#candidateReviewBars", "审批状态", metrics.byReviewStatus || []);
       renderBars("#ragExperimentStatusBars", "实验状态", metrics.ragExperimentStatus || []);
+      renderQualityTrend(metrics);
+    }
+
+    function renderQualityTrend(metrics) {
+      const rows = metrics.dailyTrends || [];
+      $("#qualityTrendRange").textContent = `${metrics.fromDate || "-"} 至 ${metrics.toDate || "-"} · 按天观察负反馈、候选转化和审批表现`;
+      if (!rows.length) {
+        $("#qualityTrendRows").innerHTML = `<div class="state">暂无质量趋势数据</div>`;
+        return;
+      }
+      const activeRows = rows.filter((row) =>
+        (row.totalFeedback || 0) > 0 || (row.candidateCount || 0) > 0 || (row.approvedCandidates || 0) > 0
+      ).slice(-10);
+      const visibleRows = activeRows.length ? activeRows : rows.slice(-10);
+      $("#qualityTrendRows").innerHTML = visibleRows.map((row) => {
+        const negativeWidth = Math.min(100, Math.max(2, Math.round((row.negativeRate || 0) * 100)));
+        const conversionWidth = Math.min(100, Math.max(2, Math.round((row.candidateConversionRate || 0) * 100)));
+        return `
+          <div class="trend-row">
+            <span class="mono">${escapeHtml(formatShortDate(row.date))}</span>
+            <span class="trend-meter" title="负反馈率 / 候选转化率">
+              <span class="trend-track"><span class="trend-fill warn" style="width:${negativeWidth}%"></span></span>
+              <span class="trend-track"><span class="trend-fill" style="width:${conversionWidth}%"></span></span>
+            </span>
+            <span class="mono muted">${formatRate(row.negativeRate)} / ${formatRate(row.candidateConversionRate)}</span>
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function loadCandidateAudits() {
+      setLoading("#candidateAuditBody", 5, "正在加载候选操作审计");
+      const rows = await api(`/api/agent/eval-candidate-audits?${params({ limit: 30 })}`);
+      state.latestCandidateAudits = rows;
+      $("#candidateAuditCount").textContent = `${rows.length} 条`;
+      if (!rows.length) {
+        $("#candidateAuditBody").innerHTML = `<tr><td class="state" colspan="5">暂无候选操作审计</td></tr>`;
+        return;
+      }
+      $("#candidateAuditBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(formatDate(row.createdAt))}</td>
+          <td>${statusChip(row.actionType)}</td>
+          <td>
+            <div class="cell-main">
+              <span class="mono strong">${escapeHtml(shortId(row.candidateId))}</span>
+              <span class="mono muted">${escapeHtml(shortId(row.feedbackId))}</span>
+            </div>
+          </td>
+          <td><span class="mono">${escapeHtml(row.actorId || "-")}</span></td>
+          <td>${escapeHtml(row.summary || "-")}</td>
+        </tr>
+      `).join("");
     }
 
     async function loadFeedback() {
@@ -1405,7 +1546,7 @@
         body: JSON.stringify(contextBody())
       });
       showToast(`已生成评测候选：${result.candidateId}`);
-      await Promise.all([loadFeedback(), loadCandidates(), loadFeedbackQuality()]);
+      await Promise.all([loadFeedback(), loadCandidates(), loadCandidateAudits(), loadFeedbackQuality()]);
       showCandidateDetail(result.candidateId);
     }
 
@@ -1425,7 +1566,7 @@
         }))
       });
       showToast(`标注已保存：${result.candidateId}`);
-      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
+      await Promise.all([loadCandidates(), loadCandidateAudits(), loadFeedbackQuality()]);
       showCandidateDetail(candidateId);
     }
 
@@ -1438,7 +1579,7 @@
         }))
       });
       showToast(`候选审批状态：${result.reviewStatus}`);
-      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
+      await Promise.all([loadCandidates(), loadCandidateAudits(), loadFeedbackQuality()]);
       showCandidateDetail(candidateId);
     }
 
@@ -1447,7 +1588,7 @@
         method: "POST"
       });
       showToast(`RAG 实验已创建：${result.experiment.experimentId}，运行 ${result.runs.length} 次`);
-      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
+      await Promise.all([loadCandidates(), loadCandidateAudits(), loadFeedbackQuality()]);
       showCandidateDetail(candidateId);
     }
 
@@ -1457,7 +1598,7 @@
         body: JSON.stringify(contextBody({ enabled: true }))
       });
       showToast(`已转为评测用例：${result.evalCaseId}`);
-      await Promise.all([loadCandidates(), loadFeedbackQuality()]);
+      await Promise.all([loadCandidates(), loadCandidateAudits(), loadFeedbackQuality()]);
       showCandidateDetail(candidateId);
     }
 
@@ -1507,12 +1648,14 @@
           loadRetryQueue().catch((error) => setError("#retryBody", 4, error)),
           loadFeedback().catch((error) => setError("#feedbackBody", 4, error)),
           loadCandidates().catch((error) => setError("#candidateBody", 5, error)),
+          loadCandidateAudits().catch((error) => setError("#candidateAuditBody", 5, error)),
           loadFeedbackQuality().catch((error) => {
             showToast(`反馈质量指标加载失败：${error.message}`);
             renderBars("#feedbackReasonBars", "反馈原因", []);
             renderBars("#feedbackTagBars", "反馈标签", []);
             renderBars("#candidateReviewBars", "审批状态", []);
             renderBars("#ragExperimentStatusBars", "实验状态", []);
+            $("#qualityTrendRows").innerHTML = `<div class="state">质量趋势加载失败</div>`;
           })
         ]);
       } finally {

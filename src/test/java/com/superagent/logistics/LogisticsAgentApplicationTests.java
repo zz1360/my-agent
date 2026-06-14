@@ -45,13 +45,16 @@ class LogisticsAgentApplicationTests {
                 .contains("执行指标")
                 .contains("失败重试队列")
                 .contains("反馈质量看板")
+                .contains("质量趋势")
                 .contains("反馈样本池")
                 .contains("评测候选")
+                .contains("候选操作审计")
                 .contains("业务回链")
                 .contains("/api/agent/actions/executions/metrics")
                 .contains("/api/agent/feedback")
                 .contains("/api/agent/feedback/quality-metrics")
                 .contains("/api/agent/eval-candidates")
+                .contains("/api/agent/eval-candidate-audits")
                 .contains("candidate-annotate-save")
                 .contains("/annotate")
                 .contains("/review");
@@ -120,7 +123,7 @@ class LogisticsAgentApplicationTests {
         assertThat(conversations).isNotNull();
         assertThat(messages).isNotNull();
         assertThat(feedback).isNotNull();
-        assertThat(migrations).isGreaterThanOrEqualTo(11);
+        assertThat(migrations).isGreaterThanOrEqualTo(12);
         Integer candidates = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_case_candidate", Integer.class);
         assertThat(candidates).isNotNull();
         Integer annotatedCandidates = jdbcTemplate.queryForObject("""
@@ -128,6 +131,11 @@ class LogisticsAgentApplicationTests {
                 WHERE TABLE_NAME = 'ai_eval_case_candidate' AND COLUMN_NAME = 'review_status'
                 """, Integer.class);
         assertThat(annotatedCandidates).isEqualTo(1);
+        Integer candidateAudits = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_NAME = 'ai_eval_case_candidate_audit'
+                """, Integer.class);
+        assertThat(candidateAudits).isEqualTo(1);
     }
 
     @Test
@@ -439,10 +447,13 @@ class LogisticsAgentApplicationTests {
                 .getResponse()
                 .getContentAsString();
         JsonNode metrics = objectMapper.readTree(metricsBody);
+        assertThat(metrics.get("fromDate").asText()).isNotBlank();
+        assertThat(metrics.get("toDate").asText()).isNotBlank();
         assertThat(metrics.get("notHelpfulFeedback").asLong()).isGreaterThanOrEqualTo(1);
         assertThat(metrics.get("candidateCount").asLong()).isGreaterThanOrEqualTo(1);
         assertThat(metrics.get("approvedCandidates").asLong()).isGreaterThanOrEqualTo(1);
         assertThat(metrics.get("candidateConversionRate").asDouble()).isGreaterThan(0);
+        assertThat(metrics.get("dailyTrends")).isNotEmpty();
         assertThat(metrics.get("byTag")).anySatisfy(tag -> {
             assertThat(tag.get("name").asText()).isEqualTo("POLICY_GAP");
             assertThat(tag.get("count").asLong()).isGreaterThanOrEqualTo(1);
@@ -451,6 +462,24 @@ class LogisticsAgentApplicationTests {
             assertThat(statusRow.get("name").asText()).isEqualTo("APPROVED");
             assertThat(statusRow.get("count").asLong()).isGreaterThanOrEqualTo(1);
         });
+
+        String auditBody = mockMvc.perform(get("/api/agent/eval-candidate-audits")
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER")
+                        .param("candidateId", candidateId)
+                        .param("limit", "20"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode audits = objectMapper.readTree(auditBody);
+        assertThat(audits).anySatisfy(row -> {
+            assertThat(row.get("candidateId").asText()).isEqualTo(candidateId);
+            assertThat(row.get("actionType").asText()).isEqualTo("CANDIDATE_APPROVED");
+        });
+        assertThat(audits).anySatisfy(row ->
+                assertThat(row.get("actionType").asText()).isEqualTo("EVAL_CASE_PROMOTED"));
     }
 
     @Test
