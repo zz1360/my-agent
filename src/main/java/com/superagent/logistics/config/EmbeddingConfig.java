@@ -13,7 +13,8 @@ import org.springframework.context.annotation.Configuration;
 import java.util.Locale;
 
 @Configuration
-@EnableConfigurationProperties({EmbeddingProperties.class, PgVectorProperties.class, RetrievalProperties.class})
+@EnableConfigurationProperties({EmbeddingProperties.class, PgVectorProperties.class, RetrievalProperties.class,
+        DeploymentProperties.class})
 public class EmbeddingConfig {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddingConfig.class);

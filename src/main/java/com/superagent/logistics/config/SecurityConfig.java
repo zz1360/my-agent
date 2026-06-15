@@ -14,7 +14,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
-@EnableConfigurationProperties(EnterpriseSecurityProperties.class)
+@EnableConfigurationProperties({EnterpriseSecurityProperties.class, DeploymentProperties.class})
 public class SecurityConfig {
 
     @Bean

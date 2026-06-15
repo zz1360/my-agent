@@ -1,0 +1,25 @@
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+agent:
+  deployment:
+    environment: dev
+    fail-fast: ${AGENT_DEPLOYMENT_FAIL_FAST:false}
+  security:
+    api-key: ${AGENT_API_KEY:}
+  deepseek:
+    enabled: ${DEEPSEEK_ENABLED:true}
+    api-key-file: ${DEEPSEEK_API_KEY_FILE:}
+  vector-store:
+    enabled: ${PGVECTOR_ENABLED:true}
+    fail-fast: ${PGVECTOR_FAIL_FAST:false}
+    jdbc-url: ${PGVECTOR_JDBC_URL}
+    username: ${PGVECTOR_USERNAME}
+    password: ${PGVECTOR_PASSWORD:}

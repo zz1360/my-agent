@@ -13,6 +13,17 @@ spring:
     baseline-on-migrate: true
     baseline-version: 0
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+
 agent:
   demo:
     seed-date: 2026-06-04

@@ -1,0 +1,50 @@
+name: Logistics Agent CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    name: Test, Package, and Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Verify no production secrets are committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_files="$(git ls-files | grep -E '(^|/)(application-secret\.yml|\.env|.*apiKey.*|.*password.*|.*secret.*)$' || true)"
+          if [[ -n "$forbidden_files" ]]; then
+            echo "Forbidden secret-like files are tracked:"
+            echo "$forbidden_files"
+            exit 1
+          fi
+          if git grep -nE '(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY)' -- ':!*.md' ':!.env.example'; then
+            echo "Potential real secret material found in tracked files."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: mvn -B test
+
+      - name: Package application
+        run: mvn -B -DskipTests package
+

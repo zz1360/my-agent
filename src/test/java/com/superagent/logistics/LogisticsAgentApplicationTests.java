@@ -11,6 +11,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -254,6 +256,101 @@ class LogisticsAgentApplicationTests {
         assertThat(retrieval.get("defaultMode").asText()).isEqualTo("HYBRID_RERANKER");
         assertThat(retrieval.get("vectorTable").asText()).isEqualTo("ai_knowledge_vector_chunk_v04");
         assertThat(retrieval.get("vectorStoreEnabled").asBoolean()).isFalse();
+    }
+
+    @Test
+    void opsReadinessActuatorAndMetricsAreExposed() throws Exception {
+        String readinessBody = mockMvc.perform(get("/api/ops/readiness"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode readiness = objectMapper.readTree(readinessBody);
+        assertThat(readiness.get("application").asText()).isEqualTo("logistics-agent");
+        assertThat(readiness.get("ready").asBoolean()).isTrue();
+        assertThat(readiness.get("checks")).anySatisfy(check -> {
+            assertThat(check.get("name").asText()).isEqualTo("businessDatabase");
+            assertThat(check.get("status").asText()).isEqualTo("UP");
+        });
+        assertThat(readiness.get("checks")).anySatisfy(check -> {
+            assertThat(check.get("name").asText()).isEqualTo("flyway");
+            assertThat(check.get("details").get("version").asText()).isNotBlank();
+        });
+        assertThat(readiness.get("checks")).anySatisfy(check -> {
+            assertThat(check.get("name").asText()).isEqualTo("pgVector");
+            assertThat(check.get("details").get("enabled").asBoolean()).isFalse();
+        });
+        assertThat(readiness.get("checks")).anySatisfy(check -> {
+            assertThat(check.get("name").asText()).isEqualTo("deepSeek");
+            assertThat(check.get("details").get("enabled").asBoolean()).isFalse();
+        });
+
+        String metricsSummaryBody = mockMvc.perform(get("/api/ops/metrics/summary"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode metricsSummary = objectMapper.readTree(metricsSummaryBody);
+        assertThat(metricsSummary.get("totalQuestions").asLong()).isGreaterThanOrEqualTo(0);
+        assertThat(metricsSummary.get("toolCallSuccessRate").asDouble()).isBetween(0.0, 1.0);
+        assertThat(metricsSummary.get("flywayVersion").asText()).isNotBlank();
+
+        String healthBody = mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode health = objectMapper.readTree(healthBody);
+        assertThat(health.get("status").asText()).isEqualTo("UP");
+        assertThat(health.get("components").has("deepSeek")).isTrue();
+        assertThat(health.get("components").has("pgVector")).isTrue();
+        assertThat(health.get("components").has("retrieval")).isTrue();
+        assertThat(health.get("components").has("flywayVersion")).isTrue();
+
+        String meterBody = mockMvc.perform(get("/actuator/metrics/logistics.agent.questions.total"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode meter = objectMapper.readTree(meterBody);
+        assertThat(meter.get("name").asText()).isEqualTo("logistics.agent.questions.total");
+        assertThat(meter.get("measurements")).isNotEmpty();
+    }
+
+    @Test
+    void deploymentProfileCiAndSecretGovernanceArtifactsExist() throws Exception {
+        String localProfile = Files.readString(Path.of("src/main/resources/application-local.yml"));
+        String devProfile = Files.readString(Path.of("src/main/resources/application-dev.yml"));
+        String prodProfile = Files.readString(Path.of("src/main/resources/application-prod.yml"));
+        String envExample = Files.readString(Path.of(".env.example"));
+        String ciWorkflow = Files.readString(Path.of(".github/workflows/ci.yml"));
+        String opsDoc = Files.readString(Path.of("docs/v21-enterprise-ops-profile-ci.md"));
+
+        assertThat(localProfile)
+                .contains("on-profile: local")
+                .contains("jdbc:h2:file")
+                .contains("enabled: ${PGVECTOR_ENABLED:false}");
+        assertThat(devProfile)
+                .contains("on-profile: dev")
+                .contains("${SPRING_DATASOURCE_URL}")
+                .contains("${DEEPSEEK_API_KEY_FILE:}");
+        assertThat(prodProfile)
+                .contains("on-profile: prod")
+                .contains("fail-fast: true")
+                .contains("${AGENT_API_KEY}")
+                .contains("${PGVECTOR_PASSWORD}");
+        assertThat(envExample)
+                .contains("Do not put real secrets in Git")
+                .contains("replace-with-your-password")
+                .contains("change-me-in-local-only");
+        assertThat(ciWorkflow)
+                .contains("Verify no production secrets are committed")
+                .contains("mvn -B test")
+                .contains("mvn -B -DskipTests package");
+        assertThat(opsDoc)
+                .contains("v2.1 企业运维基线")
+                .contains("GET /api/ops/readiness")
+                .contains("GitHub Actions CI 发布门禁");
     }
 
     @Test

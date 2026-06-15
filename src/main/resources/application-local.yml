@@ -1,0 +1,29 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:file:./.local-data/logistics_agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;AUTO_SERVER=TRUE}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER:org.h2.Driver}
+  h2:
+    console:
+      enabled: true
+
+agent:
+  deployment:
+    environment: local
+    fail-fast: false
+  demo:
+    reset-on-start: ${AGENT_DEMO_RESET_ON_START:false}
+  deepseek:
+    enabled: ${DEEPSEEK_ENABLED:false}
+  embedding:
+    provider: ${LOCAL_EMBEDDING_PROVIDER:hashing}
+    fallback-to-hashing: true
+  reranker:
+    provider: ${LOCAL_RERANKER_PROVIDER:lightweight}
+  vector-store:
+    enabled: ${PGVECTOR_ENABLED:false}
+    fail-fast: false
