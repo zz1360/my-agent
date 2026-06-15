@@ -15,10 +15,11 @@ target/
 *.keystore
 id_rsa*
 id_ed25519*
-*secret*
-*password*
-*apiKey*
-*apikey*
+/application-secret.yml
+/*secret*
+/*password*
+/*apiKey*
+/*apikey*
 
 # Local override configs
 /application-local.yml

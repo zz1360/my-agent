@@ -13,6 +13,7 @@ import com.superagent.logistics.business.TicketRecord;
 import com.superagent.logistics.business.WaybillDetail;
 import com.superagent.logistics.business.WaybillSummary;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
+import com.superagent.logistics.knowledge.KnowledgeSearchDiagnostics;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentUserContext;
@@ -24,6 +25,9 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -46,6 +50,7 @@ import java.util.stream.Collectors;
 @Service
 public class LogisticsAgentService {
 
+    private static final Logger log = LoggerFactory.getLogger(LogisticsAgentService.class);
     private static final Pattern CUSTOMER_ID_PATTERN = Pattern.compile("\\bC\\d{3}\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern WAYBILL_ID_PATTERN = Pattern.compile("\\bWB[A-Z0-9]{8,24}\\b", Pattern.CASE_INSENSITIVE);
 
@@ -80,109 +85,122 @@ public class LogisticsAgentService {
         long started = System.nanoTime();
         String traceId = "trace-" + DateTimeFormatter.BASIC_ISO_DATE.format(seedDate) + "-" + UUID.randomUUID().toString().substring(0, 8);
         AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        List<MDC.MDCCloseable> mdc = openTraceMdc(traceId, context, request.conversationId());
         ToolContext toolContext = logisticsTools.toolContext(context);
-        String message = request.message() == null ? "" : request.message().trim();
-        DateRange range = resolveDateRange(message);
-        boolean suspicious = promptInjectionGuard.isSuspicious(message);
+        try {
+            log.info("agent.chat.started");
+            String message = request.message() == null ? "" : request.message().trim();
+            DateRange range = resolveDateRange(message);
+            boolean suspicious = promptInjectionGuard.isSuspicious(message);
 
-        List<ToolCallSummary> toolCalls = new ArrayList<>();
-        String customerId = extractCustomerId(message);
-        String waybillId = extractWaybillId(message);
+            List<ToolCallSummary> toolCalls = new ArrayList<>();
+            String customerId = extractCustomerId(message);
+            String waybillId = extractWaybillId(message);
 
-        List<KnowledgeSearchResult> knowledgeResults = knowledgeSearchService.search(context, message, 4);
-        List<Citation> citations = shouldReturnCitations(request)
-                ? knowledgeResults.stream().map(this::toCitation).toList()
-                : List.of();
+            KnowledgeSearchDiagnostics searchDiagnostics = knowledgeSearchService.searchWithDiagnostics(context, message, 4);
+            List<KnowledgeSearchResult> knowledgeResults = searchDiagnostics.results();
+            log.info("agent.chat.retrieval mode={} topK={} vectorReady={} candidates={} returned={} knowledgeVersion={}",
+                    searchDiagnostics.retrievalMode(), searchDiagnostics.requestedTopK(), searchDiagnostics.vectorReady(),
+                    searchDiagnostics.candidateCount(), searchDiagnostics.returnedCount(), searchDiagnostics.knowledgeVersion());
+            List<Citation> citations = shouldReturnCitations(request)
+                    ? knowledgeResults.stream().map(this::toCitation).toList()
+                    : List.of();
 
-        if (deepSeekEnabled && !suspicious) {
-            AgentChatResponse deepSeekResponse = tryDeepSeekChat(request, context, message, knowledgeResults,
-                    citations, traceId, started, toolCalls, customerId, waybillId);
-            if (deepSeekResponse != null) {
-                return deepSeekResponse;
+            if (deepSeekEnabled && !suspicious) {
+                AgentChatResponse deepSeekResponse = tryDeepSeekChat(request, context, message, searchDiagnostics,
+                        citations, traceId, started, toolCalls, customerId, waybillId);
+                if (deepSeekResponse != null) {
+                    return deepSeekResponse;
+                }
             }
+
+            CustomerProfile customer = null;
+            WaybillDetail waybillDetail = null;
+            List<WaybillSummary> waybills = List.of();
+            List<ExceptionEvent> exceptions = List.of();
+            List<TicketRecord> tickets = List.of();
+            List<SlaRule> slaRules = List.of();
+            DiagnosisReport diagnosis = null;
+            List<CustomerProfile> highRiskCustomers = List.of();
+
+            if (waybillId != null) {
+                waybillDetail = callTool("getWaybillDetail", "waybillId=" + waybillId,
+                        () -> logisticsTools.getWaybillDetail(waybillId, toolContext), toolCalls, this::summarizeWaybillDetail);
+                if (waybillDetail != null && waybillDetail.waybill() != null) {
+                    customerId = customerId == null ? waybillDetail.waybill().customerId() : customerId;
+                    customer = waybillDetail.customer();
+                }
+            }
+
+            if (customerId != null) {
+                String finalCustomerId = customerId;
+                boolean customerLevelQuestion = waybillId == null
+                        || containsAny(message, "客户", "最近", "为什么", "诊断", "摘要", "投诉量", "上升", "风险");
+                customer = customer == null
+                        ? callTool("getCustomerProfile", "customerId=" + finalCustomerId,
+                        () -> logisticsTools.getCustomerProfile(finalCustomerId, toolContext), toolCalls, this::summarizeCustomer)
+                        : customer;
+
+                if (customerLevelQuestion && shouldQueryWaybills(message, waybillId)) {
+                    String status = message.contains("异常") ? "EXCEPTION" : null;
+                    waybills = callTool("queryCustomerWaybills", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                            () -> logisticsTools.queryCustomerWaybills(finalCustomerId, range.from(), range.to(), status, 12, toolContext),
+                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条运单摘要");
+                }
+                if (customerLevelQuestion && shouldQueryExceptions(message)) {
+                    exceptions = callTool("queryCustomerExceptions", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                            () -> logisticsTools.queryCustomerExceptions(finalCustomerId, range.from(), range.to(), null, 20, toolContext),
+                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条异常事件");
+                }
+                if (customerLevelQuestion && shouldQueryTickets(message)) {
+                    tickets = callTool("queryCustomerTickets", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                            () -> logisticsTools.queryCustomerTickets(finalCustomerId, range.from(), range.to(), 20, toolContext),
+                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条工单/投诉");
+                }
+                if (customerLevelQuestion && shouldGenerateDiagnosis(message)) {
+                    diagnosis = callTool("generateCustomerDiagnosis", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                            () -> logisticsTools.generateCustomerDiagnosis(finalCustomerId, range.from(), range.to(), toolContext),
+                            toolCalls, this::summarizeDiagnosis);
+                }
+                if (shouldQuerySla(message) && customer != null) {
+                    String serviceType = waybillDetail != null && waybillDetail.waybill() != null ? waybillDetail.waybill().serviceType() : null;
+                    CustomerProfile finalCustomer = customer;
+                    slaRules = callTool("querySlaRules", "level=" + customer.customerLevel() + ",serviceType=" + serviceType,
+                            () -> logisticsTools.querySlaRules(finalCustomer.customerLevel(), serviceType, toolContext),
+                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条 SLA/合同规则");
+                }
+            } else if (message.contains("高风险客户") || message.contains("风险客户")) {
+                highRiskCustomers = callTool("queryHighRiskCustomers", "limit=10",
+                        () -> logisticsTools.queryHighRiskCustomers(10, toolContext), toolCalls,
+                        rows -> "返回 " + safeSize(rows) + " 个风险客户");
+            }
+
+            String riskLevel = resolveRiskLevel(message, suspicious, toolCalls, customerId, waybillId);
+            String answer = buildAnswer(message, range, suspicious, customer, waybillDetail, waybills, exceptions,
+                    tickets, slaRules, diagnosis, highRiskCustomers, knowledgeResults, toolCalls);
+            answer = masker.maskText(answer);
+            long latencyMs = (System.nanoTime() - started) / 1_000_000;
+
+            auditService.recordTrace(traceId, context, request, answer, riskLevel, latencyMs);
+            auditService.recordToolCalls(traceId, toolCalls);
+            auditService.recordRagAudit(traceId, context, searchDiagnostics);
+            log.info("agent.chat.completed latencyMs={} riskLevel={} citations={} toolCalls={}",
+                    latencyMs, riskLevel, citations.size(), toolCalls.size());
+
+            return new AgentChatResponse(
+                    traceId,
+                    request.conversationId(),
+                    newMessageId(),
+                    answer,
+                    riskLevel,
+                    confidence(toolCalls, knowledgeResults, customerId, waybillId),
+                    citations,
+                    toolCalls,
+                    Instant.now()
+            );
+        } finally {
+            closeMdc(mdc);
         }
-
-        CustomerProfile customer = null;
-        WaybillDetail waybillDetail = null;
-        List<WaybillSummary> waybills = List.of();
-        List<ExceptionEvent> exceptions = List.of();
-        List<TicketRecord> tickets = List.of();
-        List<SlaRule> slaRules = List.of();
-        DiagnosisReport diagnosis = null;
-        List<CustomerProfile> highRiskCustomers = List.of();
-
-        if (waybillId != null) {
-            waybillDetail = callTool("getWaybillDetail", "waybillId=" + waybillId,
-                    () -> logisticsTools.getWaybillDetail(waybillId, toolContext), toolCalls, this::summarizeWaybillDetail);
-            if (waybillDetail != null && waybillDetail.waybill() != null) {
-                customerId = customerId == null ? waybillDetail.waybill().customerId() : customerId;
-                customer = waybillDetail.customer();
-            }
-        }
-
-        if (customerId != null) {
-            String finalCustomerId = customerId;
-            boolean customerLevelQuestion = waybillId == null
-                    || containsAny(message, "客户", "最近", "为什么", "诊断", "摘要", "投诉量", "上升", "风险");
-            customer = customer == null
-                    ? callTool("getCustomerProfile", "customerId=" + finalCustomerId,
-                    () -> logisticsTools.getCustomerProfile(finalCustomerId, toolContext), toolCalls, this::summarizeCustomer)
-                    : customer;
-
-            if (customerLevelQuestion && shouldQueryWaybills(message, waybillId)) {
-                String status = message.contains("异常") ? "EXCEPTION" : null;
-                waybills = callTool("queryCustomerWaybills", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                        () -> logisticsTools.queryCustomerWaybills(finalCustomerId, range.from(), range.to(), status, 12, toolContext),
-                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条运单摘要");
-            }
-            if (customerLevelQuestion && shouldQueryExceptions(message)) {
-                exceptions = callTool("queryCustomerExceptions", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                        () -> logisticsTools.queryCustomerExceptions(finalCustomerId, range.from(), range.to(), null, 20, toolContext),
-                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条异常事件");
-            }
-            if (customerLevelQuestion && shouldQueryTickets(message)) {
-                tickets = callTool("queryCustomerTickets", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                        () -> logisticsTools.queryCustomerTickets(finalCustomerId, range.from(), range.to(), 20, toolContext),
-                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条工单/投诉");
-            }
-            if (customerLevelQuestion && shouldGenerateDiagnosis(message)) {
-                diagnosis = callTool("generateCustomerDiagnosis", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                        () -> logisticsTools.generateCustomerDiagnosis(finalCustomerId, range.from(), range.to(), toolContext),
-                        toolCalls, this::summarizeDiagnosis);
-            }
-            if (shouldQuerySla(message) && customer != null) {
-                String serviceType = waybillDetail != null && waybillDetail.waybill() != null ? waybillDetail.waybill().serviceType() : null;
-                CustomerProfile finalCustomer = customer;
-                slaRules = callTool("querySlaRules", "level=" + customer.customerLevel() + ",serviceType=" + serviceType,
-                        () -> logisticsTools.querySlaRules(finalCustomer.customerLevel(), serviceType, toolContext),
-                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条 SLA/合同规则");
-            }
-        } else if (message.contains("高风险客户") || message.contains("风险客户")) {
-            highRiskCustomers = callTool("queryHighRiskCustomers", "limit=10",
-                    () -> logisticsTools.queryHighRiskCustomers(10, toolContext), toolCalls,
-                    rows -> "返回 " + safeSize(rows) + " 个风险客户");
-        }
-
-        String riskLevel = resolveRiskLevel(message, suspicious, toolCalls, customerId, waybillId);
-        String answer = buildAnswer(message, range, suspicious, customer, waybillDetail, waybills, exceptions,
-                tickets, slaRules, diagnosis, highRiskCustomers, knowledgeResults, toolCalls);
-        answer = masker.maskText(answer);
-        long latencyMs = (System.nanoTime() - started) / 1_000_000;
-
-        auditService.recordTrace(traceId, context, request, answer, riskLevel, latencyMs);
-        auditService.recordToolCalls(traceId, toolCalls);
-
-        return new AgentChatResponse(
-                traceId,
-                request.conversationId(),
-                newMessageId(),
-                answer,
-                riskLevel,
-                confidence(toolCalls, knowledgeResults, customerId, waybillId),
-                citations,
-                toolCalls,
-                Instant.now()
-        );
     }
 
     private <T> T callTool(String toolName, String arguments, Supplier<T> supplier,
@@ -208,7 +226,7 @@ public class LogisticsAgentService {
     private AgentChatResponse tryDeepSeekChat(AgentChatRequest request,
                                               AgentUserContext context,
                                               String message,
-                                              List<KnowledgeSearchResult> knowledgeResults,
+                                              KnowledgeSearchDiagnostics searchDiagnostics,
                                               List<Citation> citations,
                                               String traceId,
                                               long started,
@@ -228,9 +246,9 @@ public class LogisticsAgentService {
                             "userId", context.userId(),
                             "roles", context.roles()
                     ))
-                    .user(buildDeepSeekUserPrompt(message, knowledgeResults))
-                    .call()
-                    .content();
+                            .user(buildDeepSeekUserPrompt(message, searchDiagnostics.results()))
+                            .call()
+                            .content();
             long modelLatencyMs = (System.nanoTime() - start) / 1_000_000;
             toolCalls.add(new ToolCallSummary(
                     "deepSeekChatClient",
@@ -245,13 +263,16 @@ public class LogisticsAgentService {
             long latencyMs = (System.nanoTime() - started) / 1_000_000;
             auditService.recordTrace(traceId, context, request, maskedAnswer, riskLevel, latencyMs);
             auditService.recordToolCalls(traceId, toolCalls);
+            auditService.recordRagAudit(traceId, context, searchDiagnostics);
+            log.info("agent.chat.completed latencyMs={} riskLevel={} citations={} toolCalls={} provider=deepseek",
+                    latencyMs, riskLevel, citations.size(), toolCalls.size());
             return new AgentChatResponse(
                     traceId,
                     request.conversationId(),
                     newMessageId(),
                     maskedAnswer,
                     riskLevel,
-                    Math.min(0.94, confidence(toolCalls, knowledgeResults, customerId, waybillId)),
+                    Math.min(0.94, confidence(toolCalls, searchDiagnostics.results(), customerId, waybillId)),
                     citations,
                     toolCalls,
                     Instant.now()
@@ -303,6 +324,21 @@ public class LogisticsAgentService {
 
     private String newMessageId() {
         return "msg-ai-" + UUID.randomUUID().toString().substring(0, 12);
+    }
+
+    private List<MDC.MDCCloseable> openTraceMdc(String traceId, AgentUserContext context, String conversationId) {
+        List<MDC.MDCCloseable> closeables = new ArrayList<>();
+        closeables.add(MDC.putCloseable("traceId", traceId));
+        closeables.add(MDC.putCloseable("tenantId", context.tenantId()));
+        closeables.add(MDC.putCloseable("userId", context.userId()));
+        closeables.add(MDC.putCloseable("conversationId", conversationId == null ? "" : conversationId));
+        return closeables;
+    }
+
+    private void closeMdc(List<MDC.MDCCloseable> closeables) {
+        for (int i = closeables.size() - 1; i >= 0; i--) {
+            closeables.get(i).close();
+        }
     }
 
     private String buildAnswer(String message, DateRange range, boolean suspicious, CustomerProfile customer,

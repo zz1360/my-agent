@@ -40,6 +40,8 @@ info:
     description: Logistics knowledge-base Agent
 
 logging:
+  pattern:
+    level: "%5p [trace=%X{traceId:-} request=%X{requestId:-} tenant=%X{tenantId:-} user=%X{userId:-} conv=%X{conversationId:-}]"
   level:
     com.superagent.logistics: INFO
 

@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          forbidden_files="$(git ls-files | grep -E '(^|/)(application-secret\.yml|\.env|.*apiKey.*|.*password.*|.*secret.*)$' || true)"
+          forbidden_files="$(git ls-files | grep -E '(^|/)(application-secret\.yml|\.env|\.env\..*|id_rsa.*|id_ed25519.*|.*\.(key|pem|p12|jks|keystore))$' | grep -v -E '(^|/)\.env\.example$' || true)"
           if [[ -n "$forbidden_files" ]]; then
             echo "Forbidden secret-like files are tracked:"
             echo "$forbidden_files"
@@ -47,4 +47,3 @@ jobs:
 
       - name: Package application
         run: mvn -B -DskipTests package
-

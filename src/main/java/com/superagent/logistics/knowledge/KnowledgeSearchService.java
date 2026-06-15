@@ -45,13 +45,24 @@ public class KnowledgeSearchService {
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK) {
-        return search(context, query, topK, retrievalProperties.defaultOptions());
+        return searchWithDiagnostics(context, query, topK, retrievalProperties.defaultOptions()).results();
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK,
                                               KnowledgeSearchOptions options) {
+        return searchWithDiagnostics(context, query, topK, options).results();
+    }
+
+    public KnowledgeSearchDiagnostics searchWithDiagnostics(AgentUserContext context, String query, int topK) {
+        return searchWithDiagnostics(context, query, topK, retrievalProperties.defaultOptions());
+    }
+
+    public KnowledgeSearchDiagnostics searchWithDiagnostics(AgentUserContext context, String query, int topK,
+                                                           KnowledgeSearchOptions options) {
         int resultLimit = Math.max(1, Math.min(topK, 8));
         KnowledgeSearchOptions effectiveOptions = options == null ? KnowledgeSearchOptions.defaults() : options;
+        String retrievalMode = modeForOptions(effectiveOptions);
+        boolean vectorReady = vectorKnowledgeStore.isReady();
         List<KnowledgeChunk> activeChunks = findActiveChunks(context.tenantId()).stream()
                 .filter(chunk -> permissionService.canReadKnowledge(context, chunk.aclRoles()))
                 .toList();
@@ -62,7 +73,7 @@ public class KnowledgeSearchService {
         Set<String> terms = extractTerms(query);
         Map<String, Candidate> candidates = new LinkedHashMap<>();
 
-        if (effectiveOptions.useVector() && vectorKnowledgeStore.isReady()) {
+        if (effectiveOptions.useVector() && vectorReady) {
             for (KnowledgeSearchResult vectorResult : vectorKnowledgeStore.search(context.tenantId(), query, resultLimit * 4)) {
                 KnowledgeChunk activeChunk = activeByKey.get(chunkKey(vectorResult.chunk()));
                 if (activeChunk != null) {
@@ -82,7 +93,8 @@ public class KnowledgeSearchService {
             }
         }
         if (candidates.isEmpty()) {
-            return List.of();
+            return diagnostics(query, retrievalMode, resultLimit, vectorReady, effectiveOptions,
+                    activeChunks.size(), 0, 0, List.of(), activeChunks);
         }
         double maxVectorScore = candidates.values().stream().mapToDouble(candidate -> candidate.vectorScore).max().orElse(0);
         double maxKeywordScore = candidates.values().stream().mapToDouble(candidate -> candidate.keywordScore).max().orElse(0);
@@ -93,14 +105,19 @@ public class KnowledgeSearchService {
                 .filter(candidate -> candidate.ruleScore() > 0)
                 .sorted(Comparator.comparingDouble(KnowledgeRerankCandidate::ruleScore).reversed())
                 .toList();
+        List<KnowledgeSearchResult> results;
         if (!effectiveOptions.useReranker()) {
-            return rerankCandidates.stream()
+            results = rerankCandidates.stream()
                     .limit(resultLimit)
                     .map(candidate -> new KnowledgeSearchResult(candidate.chunk(), candidate.ruleScore(),
                             candidate.vectorScore(), candidate.keywordScore(), candidate.ruleScore(), null, "rule-only"))
                     .toList();
+            return diagnostics(query, retrievalMode, resultLimit, vectorReady, effectiveOptions,
+                    activeChunks.size(), candidates.size(), rerankCandidates.size(), results, activeChunks);
         }
-        return knowledgeReranker.rerank(query, rerankCandidates, resultLimit);
+        results = knowledgeReranker.rerank(query, rerankCandidates, resultLimit);
+        return diagnostics(query, retrievalMode, resultLimit, vectorReady, effectiveOptions,
+                activeChunks.size(), candidates.size(), rerankCandidates.size(), results, activeChunks);
     }
 
     private List<KnowledgeChunk> findActiveChunks(String tenantId) {
@@ -117,6 +134,74 @@ public class KnowledgeSearchService {
 
     private String chunkKey(KnowledgeChunk chunk) {
         return chunk.docId() + "/" + chunk.chunkId();
+    }
+
+    private KnowledgeSearchDiagnostics diagnostics(String query,
+                                                   String retrievalMode,
+                                                   int requestedTopK,
+                                                   boolean vectorReady,
+                                                   KnowledgeSearchOptions options,
+                                                   int activeChunkCount,
+                                                   int candidateCount,
+                                                   int rerankCandidateCount,
+                                                   List<KnowledgeSearchResult> results,
+                                                   List<KnowledgeChunk> activeChunks) {
+        List<KnowledgeSearchResult> safeResults = results == null ? List.of() : results;
+        return new KnowledgeSearchDiagnostics(
+                query,
+                retrievalMode,
+                requestedTopK,
+                vectorReady,
+                options.useVector() && vectorReady,
+                options.useKeyword(),
+                options.useReranker(),
+                activeChunkCount,
+                candidateCount,
+                rerankCandidateCount,
+                safeResults.size(),
+                knowledgeVersion(safeResults, activeChunks),
+                safeResults
+        );
+    }
+
+    private String modeForOptions(KnowledgeSearchOptions options) {
+        if (options.useVector() && options.useKeyword() && options.useReranker()) {
+            return "HYBRID_RERANKER";
+        }
+        if (options.useVector() && options.useKeyword()) {
+            return "HYBRID_RULE";
+        }
+        if (options.useVector()) {
+            return "VECTOR_ONLY";
+        }
+        return "KEYWORD_ONLY";
+    }
+
+    private String knowledgeVersion(List<KnowledgeSearchResult> results, List<KnowledgeChunk> activeChunks) {
+        List<KnowledgeChunk> chunks = results == null || results.isEmpty()
+                ? activeChunks
+                : results.stream().map(KnowledgeSearchResult::chunk).toList();
+        String version = chunks.stream()
+                .map(chunk -> chunk.docId() + "@" + metadataValue(chunk.metadata(), "version", "unknown"))
+                .distinct()
+                .limit(12)
+                .collect(java.util.stream.Collectors.joining(","));
+        return version.isBlank() ? "none" : version;
+    }
+
+    private String metadataValue(String metadata, String key, String fallback) {
+        if (metadata == null || metadata.isBlank()) {
+            return fallback;
+        }
+        String prefix = key + "=";
+        for (String item : metadata.split(";")) {
+            String trimmed = item.trim();
+            if (trimmed.startsWith(prefix)) {
+                String value = trimmed.substring(prefix.length()).trim();
+                return value.isBlank() ? fallback : value;
+            }
+        }
+        return fallback;
     }
 
     private Set<String> extractTerms(String query) {

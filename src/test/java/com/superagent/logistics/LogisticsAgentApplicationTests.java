@@ -214,7 +214,12 @@ class LogisticsAgentApplicationTests {
                 WHERE TABLE_NAME = 'ai_eval_release_gate'
                 """, Integer.class);
         assertThat(releaseGateTable).isEqualTo(1);
-        assertThat(migrations).isGreaterThanOrEqualTo(16);
+        Integer ragAuditTable = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_NAME = 'ai_agent_rag_audit'
+                """, Integer.class);
+        assertThat(ragAuditTable).isEqualTo(1);
+        assertThat(migrations).isGreaterThanOrEqualTo(17);
     }
 
     @Test
@@ -325,6 +330,11 @@ class LogisticsAgentApplicationTests {
         String envExample = Files.readString(Path.of(".env.example"));
         String ciWorkflow = Files.readString(Path.of(".github/workflows/ci.yml"));
         String opsDoc = Files.readString(Path.of("docs/v21-enterprise-ops-profile-ci.md"));
+        String dockerfile = Files.readString(Path.of("Dockerfile"));
+        String prodCompose = Files.readString(Path.of("docker-compose.prod.example.yml"));
+        String runtimeDoc = Files.readString(Path.of("docs/v22-enterprise-runtime-hardening.md"));
+        String runLocal = Files.readString(Path.of("scripts/run-local.sh"));
+        String runProd = Files.readString(Path.of("scripts/run-prod.sh"));
 
         assertThat(localProfile)
                 .contains("on-profile: local")
@@ -351,6 +361,46 @@ class LogisticsAgentApplicationTests {
                 .contains("v2.1 企业运维基线")
                 .contains("GET /api/ops/readiness")
                 .contains("GitHub Actions CI 发布门禁");
+        assertThat(dockerfile)
+                .contains("FROM maven:")
+                .contains("HEALTHCHECK")
+                .contains("java $JAVA_OPTS -jar /app/app.jar");
+        assertThat(prodCompose)
+                .contains("logistics-agent")
+                .contains("DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key")
+                .contains("healthcheck");
+        assertThat(runtimeDoc)
+                .contains("v2.2 企业运行增强")
+                .contains("ai_agent_rag_audit")
+                .contains("VALIDATION_ERROR");
+        assertThat(runLocal).contains("SPRING_PROFILES_ACTIVE");
+        assertThat(runProd).contains("docker compose");
+    }
+
+    @Test
+    void validationErrorsReturnStableCodeAndTraceId() throws Exception {
+        String body = mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Request-Id", "req-test-validation")
+                        .content("""
+                                {
+                                  "conversationId": "conv-validation",
+                                  "userId": "u-cs-test",
+                                  "tenantId": "T001",
+                                  "roles": ["CUSTOMER_SERVICE"],
+                                  "message": ""
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode error = objectMapper.readTree(body);
+        assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
+        assertThat(error.get("status").asInt()).isEqualTo(400);
+        assertThat(error.get("path").asText()).isEqualTo("/api/agent/chat");
+        assertThat(error.get("traceId").asText()).isEqualTo("req-test-validation");
     }
 
     @Test
@@ -993,6 +1043,15 @@ class LogisticsAgentApplicationTests {
         assertThat(audit.get("traceId").asText()).isEqualTo(traceId);
         assertThat(audit.get("toolCalls")).isNotEmpty();
         assertThat(audit.get("finalAnswer").asText()).contains("客户 C001");
+        assertThat(audit.get("ragAudits")).isNotEmpty();
+        JsonNode ragAudit = audit.get("ragAudits").get(0);
+        assertThat(ragAudit.get("retrievalMode").asText()).isEqualTo("HYBRID_RERANKER");
+        assertThat(ragAudit.get("knowledgeVersion").asText()).contains("@v");
+        assertThat(ragAudit.get("topK").asInt()).isEqualTo(4);
+        assertThat(ragAudit.get("candidateCount").asInt()).isGreaterThan(0);
+        assertThat(ragAudit.get("returnedCount").asInt()).isGreaterThan(0);
+        assertThat(ragAudit.get("hits")).isNotEmpty();
+        assertThat(ragAudit.get("hits").get(0).get("docId").asText()).isNotBlank();
     }
 
     @Test
@@ -1041,6 +1100,15 @@ class LogisticsAgentApplicationTests {
         JsonNode auditRows = objectMapper.readTree(auditBody);
         assertThat(auditRows).anySatisfy(row ->
                 assertThat(row.get("traceId").asText()).isEqualTo(traceId));
+
+        String traceAuditBody = mockMvc.perform(get("/api/agent/audit/{traceId}", traceId))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode traceAudit = objectMapper.readTree(traceAuditBody);
+        assertThat(traceAudit.get("ragAudits")).isNotEmpty();
+        assertThat(traceAudit.get("ragAudits").get(0).get("topK").asInt()).isEqualTo(5);
     }
 
     @Test

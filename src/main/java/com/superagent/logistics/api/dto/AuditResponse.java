@@ -13,6 +13,7 @@ public record AuditResponse(
         String riskLevel,
         long latencyMs,
         Instant createdAt,
-        List<ToolCallSummary> toolCalls
+        List<ToolCallSummary> toolCalls,
+        List<RagAuditResponse> ragAudits
 ) {
 }

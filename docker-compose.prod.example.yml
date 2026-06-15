@@ -1,0 +1,36 @@
+services:
+  logistics-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: logistics-agent:prod
+    container_name: logistics-agent
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      AGENT_ENVIRONMENT: prod
+      AGENT_API_KEY: ${AGENT_API_KEY}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
+      PGVECTOR_JDBC_URL: ${PGVECTOR_JDBC_URL}
+      PGVECTOR_USERNAME: ${PGVECTOR_USERNAME}
+      PGVECTOR_PASSWORD: ${PGVECTOR_PASSWORD}
+      AGENT_RETRIEVAL_DEFAULT_MODE: ${AGENT_RETRIEVAL_DEFAULT_MODE:-hybrid_reranker}
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx1024m}
+    secrets:
+      - deepseek_api_key
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health/readiness || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+
+secrets:
+  deepseek_api_key:
+    file: ${DEEPSEEK_API_KEY_FILE}

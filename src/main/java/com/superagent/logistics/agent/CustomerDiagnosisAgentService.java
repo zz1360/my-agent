@@ -15,6 +15,7 @@ import com.superagent.logistics.business.ExceptionEvent;
 import com.superagent.logistics.business.SlaRule;
 import com.superagent.logistics.business.TicketRecord;
 import com.superagent.logistics.business.WaybillSummary;
+import com.superagent.logistics.knowledge.KnowledgeSearchDiagnostics;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
 import com.superagent.logistics.security.AccessDeniedException;
@@ -27,6 +28,9 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -49,6 +53,7 @@ import java.util.stream.Collectors;
 @Service
 public class CustomerDiagnosisAgentService {
 
+    private static final Logger log = LoggerFactory.getLogger(CustomerDiagnosisAgentService.class);
     private static final int DEFAULT_DAYS = 30;
 
     private final KnowledgeSearchService knowledgeSearchService;
@@ -82,79 +87,107 @@ public class CustomerDiagnosisAgentService {
         long started = System.nanoTime();
         String traceId = "trace-" + DateTimeFormatter.BASIC_ISO_DATE.format(seedDate) + "-" + UUID.randomUUID().toString().substring(0, 8);
         AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        List<MDC.MDCCloseable> mdc = openTraceMdc(traceId, context, request.conversationId());
         ToolContext toolContext = logisticsTools.toolContext(context);
-        DiagnosisWindow window = resolveWindow(request);
-        String message = normalizedMessage(request, window);
-        boolean suspicious = promptInjectionGuard.isSuspicious(message);
+        try {
+            log.info("agent.diagnosis.started customerId={}", request.customerId());
+            DiagnosisWindow window = resolveWindow(request);
+            String message = normalizedMessage(request, window);
+            boolean suspicious = promptInjectionGuard.isSuspicious(message);
 
-        List<ToolCallSummary> toolCalls = new ArrayList<>();
-        CustomerProfile customer = callTool("getCustomerProfile", "customerId=" + request.customerId(),
-                () -> logisticsTools.getCustomerProfile(request.customerId(), toolContext), toolCalls, this::summarizeCustomer);
-        List<WaybillSummary> waybills = callTool("queryCustomerWaybills",
-                "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to() + ",limit=50",
-                () -> logisticsTools.queryCustomerWaybills(request.customerId(), window.from(), window.to(), null, 50, toolContext),
-                toolCalls, rows -> "返回 " + safeSize(rows) + " 条运单摘要");
-        List<ExceptionEvent> exceptions = callTool("queryCustomerExceptions",
-                "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to() + ",limit=80",
-                () -> logisticsTools.queryCustomerExceptions(request.customerId(), window.from(), window.to(), null, 80, toolContext),
-                toolCalls, rows -> "返回 " + safeSize(rows) + " 条异常事件");
-        List<TicketRecord> tickets = callTool("queryCustomerTickets",
-                "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to() + ",limit=80",
-                () -> logisticsTools.queryCustomerTickets(request.customerId(), window.from(), window.to(), 80, toolContext),
-                toolCalls, rows -> "返回 " + safeSize(rows) + " 条工单/投诉");
-        DiagnosisReport diagnosis = callTool("generateCustomerDiagnosis",
-                "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to(),
-                () -> logisticsTools.generateCustomerDiagnosis(request.customerId(), window.from(), window.to(), toolContext),
-                toolCalls, this::summarizeDiagnosis);
-        List<SlaRule> slaRules = customer == null ? List.of() : callTool("querySlaRules",
-                "level=" + customer.customerLevel() + ",serviceType=null",
-                () -> logisticsTools.querySlaRules(customer.customerLevel(), null, toolContext),
-                toolCalls, rows -> "返回 " + safeSize(rows) + " 条 SLA/合同规则");
+            List<ToolCallSummary> toolCalls = new ArrayList<>();
+            CustomerProfile customer = callTool("getCustomerProfile", "customerId=" + request.customerId(),
+                    () -> logisticsTools.getCustomerProfile(request.customerId(), toolContext), toolCalls, this::summarizeCustomer);
+            List<WaybillSummary> waybills = callTool("queryCustomerWaybills",
+                    "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to() + ",limit=50",
+                    () -> logisticsTools.queryCustomerWaybills(request.customerId(), window.from(), window.to(), null, 50, toolContext),
+                    toolCalls, rows -> "返回 " + safeSize(rows) + " 条运单摘要");
+            List<ExceptionEvent> exceptions = callTool("queryCustomerExceptions",
+                    "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to() + ",limit=80",
+                    () -> logisticsTools.queryCustomerExceptions(request.customerId(), window.from(), window.to(), null, 80, toolContext),
+                    toolCalls, rows -> "返回 " + safeSize(rows) + " 条异常事件");
+            List<TicketRecord> tickets = callTool("queryCustomerTickets",
+                    "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to() + ",limit=80",
+                    () -> logisticsTools.queryCustomerTickets(request.customerId(), window.from(), window.to(), 80, toolContext),
+                    toolCalls, rows -> "返回 " + safeSize(rows) + " 条工单/投诉");
+            DiagnosisReport diagnosis = callTool("generateCustomerDiagnosis",
+                    "customerId=" + request.customerId() + ",from=" + window.from() + ",to=" + window.to(),
+                    () -> logisticsTools.generateCustomerDiagnosis(request.customerId(), window.from(), window.to(), toolContext),
+                    toolCalls, this::summarizeDiagnosis);
+            List<SlaRule> slaRules = customer == null ? List.of() : callTool("querySlaRules",
+                    "level=" + customer.customerLevel() + ",serviceType=null",
+                    () -> logisticsTools.querySlaRules(customer.customerLevel(), null, toolContext),
+                    toolCalls, rows -> "返回 " + safeSize(rows) + " 条 SLA/合同规则");
 
-        List<KnowledgeSearchResult> knowledgeResults = knowledgeSearchService.search(context, knowledgeQuery(message, diagnosis), 5);
-        List<Citation> citations = shouldReturnCitations(request)
-                ? knowledgeResults.stream().map(this::toCitation).toList()
-                : List.of();
+            KnowledgeSearchDiagnostics searchDiagnostics = knowledgeSearchService.searchWithDiagnostics(context, knowledgeQuery(message, diagnosis), 5);
+            List<KnowledgeSearchResult> knowledgeResults = searchDiagnostics.results();
+            log.info("agent.diagnosis.retrieval mode={} topK={} vectorReady={} candidates={} returned={} knowledgeVersion={}",
+                    searchDiagnostics.retrievalMode(), searchDiagnostics.requestedTopK(), searchDiagnostics.vectorReady(),
+                    searchDiagnostics.candidateCount(), searchDiagnostics.returnedCount(), searchDiagnostics.knowledgeVersion());
+            List<Citation> citations = shouldReturnCitations(request)
+                    ? knowledgeResults.stream().map(this::toCitation).toList()
+                    : List.of();
 
-        List<RiskAttribution> attributions = buildAttributions(exceptions, waybills);
-        List<SlaAssessment> slaAssessments = buildSlaAssessments(waybills, exceptions, slaRules);
-        List<String> nextActions = buildNextActions(customer, diagnosis, attributions, slaAssessments, tickets);
-        String riskLevel = resolveRiskLevel(suspicious, diagnosis, slaAssessments, tickets);
-        String deterministicNarrative = buildNarrative(window, customer, diagnosis, attributions, slaAssessments,
-                nextActions, knowledgeResults, suspicious);
-        ModelNarrative modelNarrative = maybeGenerateDeepSeekNarrative(message, deterministicNarrative, knowledgeResults,
-                customer, diagnosis, attributions, slaAssessments, nextActions, toolCalls);
-        String narrative = masker.maskText(modelNarrative.text());
-        long latencyMs = (System.nanoTime() - started) / 1_000_000;
+            List<RiskAttribution> attributions = buildAttributions(exceptions, waybills);
+            List<SlaAssessment> slaAssessments = buildSlaAssessments(waybills, exceptions, slaRules);
+            List<String> nextActions = buildNextActions(customer, diagnosis, attributions, slaAssessments, tickets);
+            String riskLevel = resolveRiskLevel(suspicious, diagnosis, slaAssessments, tickets);
+            String deterministicNarrative = buildNarrative(window, customer, diagnosis, attributions, slaAssessments,
+                    nextActions, knowledgeResults, suspicious);
+            ModelNarrative modelNarrative = maybeGenerateDeepSeekNarrative(message, deterministicNarrative, knowledgeResults,
+                    customer, diagnosis, attributions, slaAssessments, nextActions, toolCalls);
+            String narrative = masker.maskText(modelNarrative.text());
+            long latencyMs = (System.nanoTime() - started) / 1_000_000;
 
-        AgentChatRequest auditRequest = new AgentChatRequest(
-                request.conversationId(),
-                context.userId(),
-                context.tenantId(),
-                List.copyOf(context.roles()),
-                "客户异常诊断：" + message,
-                request.returnCitations()
-        );
-        auditService.recordTrace(traceId, context, auditRequest, narrative, riskLevel, latencyMs);
-        auditService.recordToolCalls(traceId, toolCalls);
+            AgentChatRequest auditRequest = new AgentChatRequest(
+                    request.conversationId(),
+                    context.userId(),
+                    context.tenantId(),
+                    List.copyOf(context.roles()),
+                    "客户异常诊断：" + message,
+                    request.returnCitations()
+            );
+            auditService.recordTrace(traceId, context, auditRequest, narrative, riskLevel, latencyMs);
+            auditService.recordToolCalls(traceId, toolCalls);
+            auditService.recordRagAudit(traceId, context, searchDiagnostics);
+            log.info("agent.diagnosis.completed latencyMs={} riskLevel={} citations={} toolCalls={} provider={}",
+                    latencyMs, riskLevel, citations.size(), toolCalls.size(), modelNarrative.provider());
 
-        return new CustomerDiagnosisResponse(
-                traceId,
-                request.conversationId(),
-                window,
-                maskCustomer(customer),
-                diagnosis,
-                attributions,
-                slaAssessments,
-                citations,
-                toolCalls,
-                nextActions,
-                riskLevel,
-                confidence(toolCalls, knowledgeResults, diagnosis),
-                narrative,
-                modelNarrative.provider(),
-                Instant.now()
-        );
+            return new CustomerDiagnosisResponse(
+                    traceId,
+                    request.conversationId(),
+                    window,
+                    maskCustomer(customer),
+                    diagnosis,
+                    attributions,
+                    slaAssessments,
+                    citations,
+                    toolCalls,
+                    nextActions,
+                    riskLevel,
+                    confidence(toolCalls, knowledgeResults, diagnosis),
+                    narrative,
+                    modelNarrative.provider(),
+                    Instant.now()
+            );
+        } finally {
+            closeMdc(mdc);
+        }
+    }
+
+    private List<MDC.MDCCloseable> openTraceMdc(String traceId, AgentUserContext context, String conversationId) {
+        List<MDC.MDCCloseable> closeables = new ArrayList<>();
+        closeables.add(MDC.putCloseable("traceId", traceId));
+        closeables.add(MDC.putCloseable("tenantId", context.tenantId()));
+        closeables.add(MDC.putCloseable("userId", context.userId()));
+        closeables.add(MDC.putCloseable("conversationId", conversationId == null ? "" : conversationId));
+        return closeables;
+    }
+
+    private void closeMdc(List<MDC.MDCCloseable> closeables) {
+        for (int i = closeables.size() - 1; i >= 0; i--) {
+            closeables.get(i).close();
+        }
     }
 
     private CustomerProfile maskCustomer(CustomerProfile customer) {
