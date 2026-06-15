@@ -60,6 +60,8 @@ class LogisticsAgentApplicationTests {
                 .contains("候选操作审计")
                 .contains("评测集版本")
                 .contains("业务回链")
+                .contains("发布门禁")
+                .contains("企业检索策略")
                 .contains("/api/agent/actions/executions/metrics")
                 .contains("/api/agent/feedback")
                 .contains("/api/agent/feedback/quality-metrics")
@@ -73,12 +75,15 @@ class LogisticsAgentApplicationTests {
                 .contains("/task?")
                 .contains("/api/agent/evals/suites")
                 .contains("/api/agent/evals/runs/compare")
+                .contains("/api/agent/evals/release-gates")
                 .contains("/api/knowledge/search/preview")
+                .contains("/api/knowledge/retrieval/status")
                 .contains("feedback-tag-save")
                 .contains("alert-rule-save")
                 .contains("alert-task")
                 .contains("alert-task-transition")
                 .contains("eval-compare")
+                .contains("eval-release-gate-run")
                 .contains("retrieval-preview")
                 .contains("modelVersion")
                 .contains("candidate-annotate-save")
@@ -201,7 +206,54 @@ class LogisticsAgentApplicationTests {
         assertThat(alertTaskColumn).isEqualTo(1);
         assertThat(opsTaskUpdatedAtColumn).isEqualTo(1);
         assertThat(opsTaskOwnerColumn).isEqualTo(1);
-        assertThat(suiteVersion).isEqualTo("v1.9");
+        assertThat(suiteVersion).isEqualTo("v2.0");
+        Integer releaseGateTable = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_NAME = 'ai_eval_release_gate'
+                """, Integer.class);
+        assertThat(releaseGateTable).isEqualTo(1);
+        assertThat(migrations).isGreaterThanOrEqualTo(16);
+    }
+
+    @Test
+    void enterpriseSecurityBusinessDataAndRetrievalStatusAreExposed() throws Exception {
+        String securityBody = mockMvc.perform(get("/api/agent/security/context")
+                        .header("X-Agent-Tenant", "T001")
+                        .header("X-Agent-User", "u-enterprise")
+                        .header("X-Agent-Roles", "OPS_MANAGER,CUSTOMER_SERVICE"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode security = objectMapper.readTree(securityBody);
+        assertThat(security.get("tenantId").asText()).isEqualTo("T001");
+        assertThat(security.get("userId").asText()).isEqualTo("u-enterprise");
+        assertThat(security.get("roles")).anySatisfy(role -> assertThat(role.asText()).isEqualTo("OPS_MANAGER"));
+        assertThat(security.get("apiKeyRequired").asBoolean()).isFalse();
+
+        String sourceBody = mockMvc.perform(get("/api/agent/business-data/sources")
+                        .param("tenantId", "T001")
+                        .param("userId", "admin-console")
+                        .param("roles", "OPS_MANAGER"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode source = objectMapper.readTree(sourceBody);
+        assertThat(source.get("adapter").asText()).isEqualTo("JdbcLogisticsBusinessDataAdapter");
+        assertThat(source.get("sourceType").asText()).isEqualTo("JDBC_READ_MODEL");
+        assertThat(source.get("isolationStrategy").asText()).contains("tenant_id");
+        assertThat(source.get("tableRows").get("logistics_waybill").asInt()).isGreaterThan(0);
+
+        String retrievalBody = mockMvc.perform(get("/api/knowledge/retrieval/status"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode retrieval = objectMapper.readTree(retrievalBody);
+        assertThat(retrieval.get("defaultMode").asText()).isEqualTo("HYBRID_RERANKER");
+        assertThat(retrieval.get("vectorTable").asText()).isEqualTo("ai_knowledge_vector_chunk_v04");
+        assertThat(retrieval.get("vectorStoreEnabled").asBoolean()).isFalse();
     }
 
     @Test
@@ -1481,7 +1533,7 @@ class LogisticsAgentApplicationTests {
         JsonNode suites = objectMapper.readTree(suitesBody);
         assertThat(suites).anySatisfy(suite -> {
             assertThat(suite.get("suiteId").asText()).isEqualTo("suite-logistics-regression");
-            assertThat(suite.get("suiteVersion").asText()).isEqualTo("v1.9");
+            assertThat(suite.get("suiteVersion").asText()).isEqualTo("v2.0");
             assertThat(suite.get("caseCount").asInt()).isGreaterThanOrEqualTo(5);
         });
     }
@@ -1640,7 +1692,7 @@ class LogisticsAgentApplicationTests {
                 .getContentAsString();
         JsonNode suiteRun = objectMapper.readTree(suiteRunBody);
         assertThat(suiteRun.get("suiteId").asText()).isEqualTo("suite-logistics-regression");
-        assertThat(suiteRun.get("suiteVersion").asText()).isEqualTo("v1.9");
+        assertThat(suiteRun.get("suiteVersion").asText()).isEqualTo("v2.0");
         assertThat(suiteRun.get("status").asText()).isEqualTo("PASSED");
         assertThat(suiteRun.get("totalCases").asInt()).isGreaterThanOrEqualTo(5);
         assertThat(suiteRun.get("modelVersion").asText()).isEqualTo("deepseek-v4-flash");
@@ -1672,6 +1724,43 @@ class LogisticsAgentApplicationTests {
         assertThat(compare.get("candidateRunId").asText()).isEqualTo(suiteRun.get("runId").asText());
         assertThat(compare.get("regressedCases").asInt()).isEqualTo(0);
         assertThat(compare.get("cases")).isNotEmpty();
+
+        String gateBody = mockMvc.perform(post("/api/agent/evals/release-gates/run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tenantId": "T001",
+                                  "suiteId": "suite-logistics-regression",
+                                  "modelVersion": "deepseek-v4-flash",
+                                  "knowledgeVersion": "kb-v2.0-gate",
+                                  "promptVersion": "prompt-v2.0-gate",
+                                  "minPassRate": 1.0,
+                                  "maxRegressions": 0
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode gate = objectMapper.readTree(gateBody);
+        assertThat(gate.get("gateId").asText()).startsWith("gate-");
+        assertThat(gate.get("status").asText()).isEqualTo("PASSED");
+        assertThat(gate.get("candidateRunId").asText()).startsWith("eval-");
+        assertThat(gate.get("baselineRunId").asText()).startsWith("eval-");
+        assertThat(gate.get("passRate").asDouble()).isEqualTo(1.0);
+        assertThat(gate.get("regressedCases").asInt()).isEqualTo(0);
+
+        String gatesBody = mockMvc.perform(get("/api/agent/evals/release-gates")
+                        .param("tenantId", "T001")
+                        .param("suiteId", "suite-logistics-regression")
+                        .param("limit", "10"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode gates = objectMapper.readTree(gatesBody);
+        assertThat(gates).anySatisfy(row ->
+                assertThat(row.get("gateId").asText()).isEqualTo(gate.get("gateId").asText()));
     }
 
     private JsonNode awaitIndexJob(String jobId) throws Exception {

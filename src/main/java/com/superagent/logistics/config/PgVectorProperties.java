@@ -10,7 +10,7 @@ public class PgVectorProperties {
     private String jdbcUrl = "jdbc:postgresql://localhost:5432/logistics_agent";
     private String username = "logistics_agent";
     private String password = "";
-    private String tableName = "ai_knowledge_vector_chunk";
+    private String tableName = "ai_knowledge_vector_chunk_v04";
     private int dimension = 384;
     private boolean initializeSchema = true;
 

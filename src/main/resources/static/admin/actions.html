@@ -271,6 +271,10 @@
       border-collapse: collapse;
     }
 
+    table.compact-table {
+      min-width: 520px;
+    }
+
     th,
     td {
       padding: 10px 12px;
@@ -1067,6 +1071,33 @@
           <div class="detail" id="evalComparePanel">
             <div class="state">选择两次评测运行后查看差异</div>
           </div>
+          <div class="governance-form" aria-label="发布门禁">
+            <label class="field">
+              <span>最低通过率</span>
+              <input id="evalGateMinPassRate" type="number" min="0" max="1" step="0.01" value="1">
+            </label>
+            <label class="field">
+              <span>允许退化数</span>
+              <input id="evalGateMaxRegressions" type="number" min="0" max="20" value="0">
+            </label>
+            <button class="button primary" type="button" data-role="eval-release-gate-run">运行门禁</button>
+          </div>
+          <div class="table-wrap">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>门禁</th>
+                  <th>状态</th>
+                  <th>通过率</th>
+                  <th>退化</th>
+                  <th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="evalReleaseGateBody">
+                <tr><td class="state" colspan="5">正在加载发布门禁</td></tr>
+              </tbody>
+            </table>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -1114,6 +1145,9 @@
           </div>
           <div class="mini-bars" id="retrievalPreviewRows">
             <div class="state">选择检索模式后预览召回片段</div>
+          </div>
+          <div class="mini-bars" id="retrievalStatusRows">
+            <div class="state">正在加载企业检索策略</div>
           </div>
         </section>
 
@@ -1244,7 +1278,8 @@
       latestAlertTasks: [],
       latestQualityGovernanceTrend: null,
       latestEvalSuites: [],
-      latestEvalRuns: []
+      latestEvalRuns: [],
+      latestReleaseGates: []
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -1316,9 +1351,9 @@
 
     function statusChip(status) {
       const value = escapeHtml(status || "UNKNOWN");
-      const cls = status === "SUCCESS" || status === "APPROVED" || status === "RESOLVED" || status === "ENABLED"
+      const cls = status === "SUCCESS" || status === "APPROVED" || status === "RESOLVED" || status === "ENABLED" || status === "PASSED"
         ? "success"
-        : status === "FAILED" || status === "REJECTED" || status === "ERROR" || status === "OPEN"
+        : status === "FAILED" || status === "REJECTED" || status === "ERROR" || status === "OPEN" || status === "BLOCKED"
           ? "fail"
           : status === "DRAFT" || status === "WARN"
             ? "warn"
@@ -1768,6 +1803,30 @@
               <button class="button compact" type="button" data-role="eval-candidate-fill" data-run-id="${escapeHtml(row.runId)}">候选</button>
             </div>
           </td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadEvalReleaseGates() {
+      setLoading("#evalReleaseGateBody", 5, "正在加载发布门禁");
+      const rows = await api(`/api/agent/evals/release-gates?${params({ limit: 10 })}`);
+      state.latestReleaseGates = rows;
+      if (!rows.length) {
+        $("#evalReleaseGateBody").innerHTML = `<tr><td class="state" colspan="5">暂无发布门禁记录</td></tr>`;
+        return;
+      }
+      $("#evalReleaseGateBody").innerHTML = rows.map((row) => `
+        <tr>
+          <td>
+            <div class="cell-main">
+              <span class="mono strong">${escapeHtml(shortId(row.gateId))}</span>
+              <span class="mono muted">${escapeHtml(shortId(row.candidateRunId))}</span>
+            </div>
+          </td>
+          <td>${statusChip(row.status)}</td>
+          <td><span class="mono">${escapeHtml(formatRate(row.passRate))}</span> <span class="mono muted">≥ ${escapeHtml(formatRate(row.minPassRate))}</span></td>
+          <td><span class="mono">${escapeHtml(row.regressedCases)}</span> <span class="mono muted">≤ ${escapeHtml(row.maxRegressions)}</span></td>
+          <td>${escapeHtml(formatDate(row.createdAt))}</td>
         </tr>
       `).join("");
     }
@@ -2291,6 +2350,23 @@
       await loadEvalRuns();
     }
 
+    async function runEvalReleaseGate() {
+      const suiteId = state.latestEvalSuites[0]?.suiteId || "suite-logistics-regression";
+      const result = await api("/api/agent/evals/release-gates/run", {
+        method: "POST",
+        body: JSON.stringify(contextBody({
+          suiteId,
+          modelVersion: $("#evalModelVersion")?.value || "",
+          knowledgeVersion: $("#evalKnowledgeVersion")?.value || "",
+          promptVersion: $("#evalPromptVersion")?.value || "",
+          minPassRate: Number($("#evalGateMinPassRate")?.value || 1),
+          maxRegressions: Number($("#evalGateMaxRegressions")?.value || 0)
+        }))
+      });
+      showToast(`发布门禁：${result.status}，通过率 ${formatRate(result.passRate)}，退化 ${result.regressedCases} 条`);
+      await Promise.all([loadEvalRuns(), loadEvalReleaseGates()]);
+    }
+
     async function compareEvalRuns() {
       const baselineRunId = $("#evalBaselineRunId").value.trim();
       const candidateRunId = $("#evalCandidateRunId").value.trim();
@@ -2346,6 +2422,22 @@
       showToast(`检索预览完成：${result.mode}，${rows.length} 条，vectorReady=${result.vectorReady}`);
     }
 
+    async function loadRetrievalStatus() {
+      const status = await api("/api/knowledge/retrieval/status");
+      $("#retrievalStatusRows").innerHTML = `
+        <div class="bar-row">
+          <span class="mono">default</span>
+          <span class="muted">${escapeHtml(status.defaultMode)} · table ${escapeHtml(status.vectorTable)}</span>
+          <span>${status.vectorStoreReady ? statusChip("READY") : statusChip("NOT_READY")}</span>
+        </div>
+        <div class="bar-row">
+          <span class="mono">pgvector</span>
+          <span class="muted">enabled=${escapeHtml(status.vectorStoreEnabled)} · chunks=${escapeHtml(status.vectorChunks)}</span>
+          <span class="mono muted">企业检索策略</span>
+        </div>
+      `;
+    }
+
     function addCandidateTag(tagCode) {
       const field = $("#candidateFeedbackTags");
       if (!field || !tagCode) return;
@@ -2390,6 +2482,11 @@
           }),
           loadEvalSuites().catch((error) => setError("#evalSuiteBody", 5, error)),
           loadEvalRuns().catch((error) => setError("#evalRunBody", 5, error)),
+          loadEvalReleaseGates().catch((error) => setError("#evalReleaseGateBody", 5, error)),
+          loadRetrievalStatus().catch((error) => {
+            showToast(`检索策略加载失败：${error.message}`);
+            $("#retrievalStatusRows").innerHTML = `<div class="state">企业检索策略加载失败</div>`;
+          }),
           loadFeedbackQuality().catch((error) => {
             showToast(`反馈质量指标加载失败：${error.message}`);
             renderBars("#feedbackReasonBars", "反馈原因", []);
@@ -2448,6 +2545,8 @@
           await transitionAlertTask(target.dataset.taskId, target.dataset.status);
         } else if (target.dataset.role === "eval-suite-run") {
           await runEvalSuite(target.dataset.suiteId);
+        } else if (target.dataset.role === "eval-release-gate-run") {
+          await runEvalReleaseGate();
         } else if (target.dataset.role === "eval-baseline-fill") {
           $("#evalBaselineRunId").value = target.dataset.runId;
           showToast(`已选择基线运行：${target.dataset.runId}`);

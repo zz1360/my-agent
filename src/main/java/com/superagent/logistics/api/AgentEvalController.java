@@ -1,6 +1,8 @@
 package com.superagent.logistics.api;
 
 import com.superagent.logistics.api.dto.EvalCaseResponse;
+import com.superagent.logistics.api.dto.EvalReleaseGateRequest;
+import com.superagent.logistics.api.dto.EvalReleaseGateResponse;
 import com.superagent.logistics.api.dto.EvalRunComparisonResponse;
 import com.superagent.logistics.api.dto.EvalRunResponse;
 import com.superagent.logistics.api.dto.EvalSuiteResponse;
@@ -8,6 +10,7 @@ import com.superagent.logistics.eval.AgentEvalService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -48,6 +51,13 @@ public class AgentEvalController {
         return evalService.compareRuns(baselineRunId, candidateRunId);
     }
 
+    @GetMapping("/release-gates")
+    public List<EvalReleaseGateResponse> listReleaseGates(@RequestParam(required = false) String tenantId,
+                                                          @RequestParam(required = false) String suiteId,
+                                                          @RequestParam(defaultValue = "10") int limit) {
+        return evalService.listReleaseGates(tenantId, suiteId, limit);
+    }
+
     @PostMapping("/run")
     public EvalRunResponse run(@RequestParam(required = false) String tenantId,
                                @RequestParam(required = false) String modelVersion,
@@ -63,6 +73,11 @@ public class AgentEvalController {
                                     @RequestParam(required = false) String knowledgeVersion,
                                     @RequestParam(required = false) String promptVersion) {
         return evalService.runSuite(tenantId, suiteId, modelVersion, knowledgeVersion, promptVersion);
+    }
+
+    @PostMapping("/release-gates/run")
+    public EvalReleaseGateResponse runReleaseGate(@RequestBody(required = false) EvalReleaseGateRequest request) {
+        return evalService.runReleaseGate(request);
     }
 
     @GetMapping("/runs/{runId}")

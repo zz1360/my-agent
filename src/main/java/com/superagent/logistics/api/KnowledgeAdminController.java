@@ -7,6 +7,7 @@ import com.superagent.logistics.api.dto.KnowledgeDocumentResponse;
 import com.superagent.logistics.api.dto.KnowledgePreviewResponse;
 import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
 import com.superagent.logistics.api.dto.KnowledgeSearchPreviewResponse;
+import com.superagent.logistics.api.dto.RetrievalStatusResponse;
 import com.superagent.logistics.knowledge.KnowledgeAdminService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -123,5 +124,10 @@ public class KnowledgeAdminController {
                                                         @RequestParam(defaultValue = "5") int topK,
                                                         @RequestParam(defaultValue = "hybrid_reranker") String mode) {
         return knowledgeAdminService.searchPreview(tenantId, userId, roles, query, topK, mode);
+    }
+
+    @GetMapping("/retrieval/status")
+    public RetrievalStatusResponse retrievalStatus() {
+        return knowledgeAdminService.retrievalStatus();
     }
 }

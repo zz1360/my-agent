@@ -1,5 +1,6 @@
 package com.superagent.logistics.eval;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.superagent.logistics.agent.CustomerDiagnosisAgentService;
 import com.superagent.logistics.agent.LogisticsAgentService;
@@ -9,6 +10,8 @@ import com.superagent.logistics.api.dto.Citation;
 import com.superagent.logistics.api.dto.CustomerDiagnosisRequest;
 import com.superagent.logistics.api.dto.CustomerDiagnosisResponse;
 import com.superagent.logistics.api.dto.EvalCaseResponse;
+import com.superagent.logistics.api.dto.EvalReleaseGateRequest;
+import com.superagent.logistics.api.dto.EvalReleaseGateResponse;
 import com.superagent.logistics.api.dto.EvalCaseResultResponse;
 import com.superagent.logistics.api.dto.EvalRunResponse;
 import com.superagent.logistics.api.dto.EvalRunComparisonResponse;
@@ -36,6 +39,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -286,6 +290,70 @@ public class AgentEvalService implements ApplicationRunner {
         );
     }
 
+    public EvalReleaseGateResponse runReleaseGate(EvalReleaseGateRequest request) {
+        EvalReleaseGateRequest effectiveRequest = request == null
+                ? new EvalReleaseGateRequest(null, null, null, null, null, null, null)
+                : request;
+        String resolvedTenant = resolveTenant(effectiveRequest.tenantId());
+        String suiteId = defaultVersion(effectiveRequest.suiteId(), "suite-logistics-regression");
+        BigDecimal minPassRate = effectiveRequest.minPassRate() == null
+                ? BigDecimal.ONE.setScale(4)
+                : effectiveRequest.minPassRate().setScale(4, java.math.RoundingMode.HALF_UP);
+        int maxRegressions = effectiveRequest.maxRegressions() == null ? 0 : Math.max(0, effectiveRequest.maxRegressions());
+        String baselineRunId = findLatestFinishedSuiteRunId(resolvedTenant, suiteId).orElse(null);
+        EvalRunResponse candidate = runSuite(resolvedTenant, suiteId, effectiveRequest.modelVersion(),
+                effectiveRequest.knowledgeVersion(), effectiveRequest.promptVersion());
+        BigDecimal passRate = ratio(candidate.passedCases(), candidate.totalCases());
+        int regressedCases = baselineRunId == null ? 0 : compareRuns(baselineRunId, candidate.runId()).regressedCases();
+        List<String> reasons = new ArrayList<>();
+        if (!"PASSED".equals(candidate.status())) {
+            reasons.add("候选评测未全部通过：" + candidate.failedCases() + " 个失败用例");
+        }
+        if (passRate.compareTo(minPassRate) < 0) {
+            reasons.add("通过率 " + passRate + " 低于门禁阈值 " + minPassRate);
+        }
+        if (regressedCases > maxRegressions) {
+            reasons.add("退化用例 " + regressedCases + " 个，超过允许值 " + maxRegressions);
+        }
+        if (baselineRunId == null) {
+            reasons.add("未找到历史基线，本次仅按绝对通过率放行");
+        }
+        String status = reasons.stream().anyMatch(reason -> reason.contains("低于") || reason.contains("超过") || reason.contains("未全部通过"))
+                ? "BLOCKED"
+                : "PASSED";
+        String gateId = "gate-" + UUID.randomUUID().toString().substring(0, 8);
+        Instant createdAt = Instant.now();
+        jdbcTemplate.update("""
+                INSERT INTO ai_eval_release_gate
+                (tenant_id, gate_id, suite_id, candidate_run_id, baseline_run_id, status,
+                 total_cases, passed_cases, failed_cases, pass_rate, min_pass_rate,
+                 regressed_cases, max_regressions, reasons_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, resolvedTenant, gateId, suiteId, candidate.runId(), baselineRunId, status,
+                candidate.totalCases(), candidate.passedCases(), candidate.failedCases(), passRate, minPassRate,
+                regressedCases, maxRegressions, toJson(reasons), Timestamp.from(createdAt));
+        return new EvalReleaseGateResponse(gateId, resolvedTenant, suiteId, status, candidate.runId(), baselineRunId,
+                candidate.totalCases(), candidate.passedCases(), candidate.failedCases(), passRate, minPassRate,
+                regressedCases, maxRegressions, reasons, createdAt);
+    }
+
+    public List<EvalReleaseGateResponse> listReleaseGates(String tenantId, String suiteId, int limit) {
+        String resolvedTenant = resolveTenant(tenantId);
+        StringBuilder sql = new StringBuilder("""
+                SELECT * FROM ai_eval_release_gate
+                WHERE tenant_id = ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(resolvedTenant);
+        if (suiteId != null && !suiteId.isBlank()) {
+            sql.append(" AND suite_id = ?");
+            args.add(suiteId);
+        }
+        sql.append(" ORDER BY created_at DESC LIMIT ?");
+        args.add(Math.max(1, Math.min(limit, 50)));
+        return jdbcTemplate.query(sql.toString(), this::mapReleaseGate, args.toArray());
+    }
+
     private EvalSuiteResponse findSuite(String tenantId, String suiteId) {
         return jdbcTemplate.query("""
                         SELECT s.*, COUNT(sc.case_id) AS case_count
@@ -299,6 +367,16 @@ public class AgentEvalService implements ApplicationRunner {
                 tenantId,
                 suiteId).stream().findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("未找到评测集：" + suiteId));
+    }
+
+    private Optional<String> findLatestFinishedSuiteRunId(String tenantId, String suiteId) {
+        List<String> rows = jdbcTemplate.query("""
+                SELECT run_id FROM ai_eval_run
+                WHERE tenant_id = ? AND suite_id = ? AND finished_at IS NOT NULL
+                ORDER BY finished_at DESC
+                LIMIT 1
+                """, (rs, rowNum) -> rs.getString("run_id"), tenantId, suiteId);
+        return rows.stream().findFirst();
     }
 
     private EvalCaseExecution execute(EvalCase evalCase) {
@@ -506,8 +584,8 @@ public class AgentEvalService implements ApplicationRunner {
 
     private void seedDefaultSuites() {
         Instant now = Instant.now();
-        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v1.9",
-                "覆盖核心问答、客户诊断、提示词注入、RAG 检索质量、质量治理闭环、告警任务流转与评测版本对比的默认回归套件。", now);
+        insertSuite("T001", "suite-logistics-regression", "物流 Agent 主回归集", "v2.0",
+                "覆盖核心问答、客户诊断、提示词注入、RAG 检索质量、质量治理闭环、告警任务流转、评测版本对比与企业发布门禁的默认回归套件。", now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-delay-compensation", 10, now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-customer-diagnosis", 20, now);
         insertSuiteCase("T001", "suite-logistics-regression", "eval-prompt-injection", 30, now);
@@ -655,6 +733,26 @@ public class AgentEvalService implements ApplicationRunner {
         );
     }
 
+    private EvalReleaseGateResponse mapReleaseGate(ResultSet rs, int rowNum) throws SQLException {
+        return new EvalReleaseGateResponse(
+                rs.getString("gate_id"),
+                rs.getString("tenant_id"),
+                rs.getString("suite_id"),
+                rs.getString("status"),
+                rs.getString("candidate_run_id"),
+                rs.getString("baseline_run_id"),
+                rs.getInt("total_cases"),
+                rs.getInt("passed_cases"),
+                rs.getInt("failed_cases"),
+                rs.getBigDecimal("pass_rate"),
+                rs.getBigDecimal("min_pass_rate"),
+                rs.getInt("regressed_cases"),
+                rs.getInt("max_regressions"),
+                parseReasons(rs.getString("reasons_json")),
+                rs.getTimestamp("created_at").toInstant()
+        );
+    }
+
     private EvalCaseResultResponse mapResult(ResultSet rs, int rowNum) throws SQLException {
         return new EvalCaseResultResponse(
                 rs.getString("case_id"),
@@ -703,6 +801,26 @@ public class AgentEvalService implements ApplicationRunner {
             return null;
         }
         return String.join("\n", values);
+    }
+
+    private String toJson(List<String> values) {
+        try {
+            return objectMapper.writeValueAsString(values == null ? List.of() : values);
+        } catch (Exception ex) {
+            return "[]";
+        }
+    }
+
+    private List<String> parseReasons(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(value, new TypeReference<List<String>>() {
+            });
+        } catch (Exception ex) {
+            return splitLines(value);
+        }
     }
 
     private List<String> distinct(List<String> values) {

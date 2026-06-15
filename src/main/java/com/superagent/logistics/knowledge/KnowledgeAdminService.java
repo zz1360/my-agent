@@ -9,6 +9,7 @@ import com.superagent.logistics.api.dto.KnowledgePreviewResponse;
 import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
 import com.superagent.logistics.api.dto.KnowledgeSearchHitResponse;
 import com.superagent.logistics.api.dto.KnowledgeSearchPreviewResponse;
+import com.superagent.logistics.api.dto.RetrievalStatusResponse;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
@@ -254,6 +255,16 @@ public class KnowledgeAdminService {
                 ))
                 .toList();
         return new KnowledgeSearchPreviewResponse(normalizedMode, vectorKnowledgeStore.isReady(), resultLimit, hits);
+    }
+
+    public RetrievalStatusResponse retrievalStatus() {
+        return new RetrievalStatusResponse(
+                searchService.defaultMode(),
+                vectorKnowledgeStore.isEnabled(),
+                vectorKnowledgeStore.isReady(),
+                vectorKnowledgeStore.table(),
+                vectorKnowledgeStore.countChunks()
+        );
     }
 
     private KnowledgeDocumentResponse get(String tenantId, String docId, AgentUserContext context, boolean includeChunks) {

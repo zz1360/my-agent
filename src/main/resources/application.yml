@@ -24,6 +24,19 @@ logging:
     com.superagent.logistics: INFO
 
 agent:
+  security:
+    enabled: true
+    api-key: ${AGENT_API_KEY:}
+    api-key-header: X-Agent-Api-Key
+    tenant-header: X-Agent-Tenant
+    user-header: X-Agent-User
+    roles-header: X-Agent-Roles
+    protected-path-prefixes:
+      - /api/
+    public-path-prefixes:
+      - /api/demo/
+  retrieval:
+    default-mode: ${AGENT_RETRIEVAL_DEFAULT_MODE:hybrid_reranker}
   demo:
     seed-date: 2026-06-04
     reset-on-start: false

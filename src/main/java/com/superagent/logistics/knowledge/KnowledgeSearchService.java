@@ -1,5 +1,6 @@
 package com.superagent.logistics.knowledge;
 
+import com.superagent.logistics.config.RetrievalProperties;
 import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,19 +30,22 @@ public class KnowledgeSearchService {
     private final AgentPermissionService permissionService;
     private final PgVectorKnowledgeStore vectorKnowledgeStore;
     private final KnowledgeReranker knowledgeReranker;
+    private final RetrievalProperties retrievalProperties;
 
     public KnowledgeSearchService(JdbcTemplate jdbcTemplate,
                                   AgentPermissionService permissionService,
                                   PgVectorKnowledgeStore vectorKnowledgeStore,
-                                  KnowledgeReranker knowledgeReranker) {
+                                  KnowledgeReranker knowledgeReranker,
+                                  RetrievalProperties retrievalProperties) {
         this.jdbcTemplate = jdbcTemplate;
         this.permissionService = permissionService;
         this.vectorKnowledgeStore = vectorKnowledgeStore;
         this.knowledgeReranker = knowledgeReranker;
+        this.retrievalProperties = retrievalProperties;
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK) {
-        return search(context, query, topK, KnowledgeSearchOptions.defaults());
+        return search(context, query, topK, retrievalProperties.defaultOptions());
     }
 
     public List<KnowledgeSearchResult> search(AgentUserContext context, String query, int topK,
@@ -227,6 +231,10 @@ public class KnowledgeSearchService {
         questions.add("帮我生成客户 C001 本周服务诊断摘要。");
         questions.add("华东区高风险客户有哪些？");
         return questions;
+    }
+
+    public String defaultMode() {
+        return retrievalProperties.normalizedDefaultMode();
     }
 
     private static class Candidate {
