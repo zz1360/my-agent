@@ -29,5 +29,11 @@ id_ed25519*
 # Maven / build cache
 .mvn/wrapper/maven-wrapper.jar
 
+# Frontend / Node build cache
+/node_modules/
+
 # Local embedding model files
 .local-models/
+
+# Local runtime databases
+.local-data/
