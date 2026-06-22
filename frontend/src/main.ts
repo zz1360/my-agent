@@ -14,4 +14,9 @@ app.use(createPinia())
 app.use(router)
 app.use(ElementPlus)
 
+window.addEventListener('agent-auth-invalid', () => {
+  const currentPath = router.currentRoute.value.fullPath
+  void router.replace({ name: 'access', query: { redirect: currentPath } })
+})
+
 app.mount('#app')

@@ -1,6 +1,27 @@
 import { test, expect } from '@playwright/test'
 
 test.beforeEach(async ({ page }) => {
+  await page.route('**/api/agent/security/context', (route) =>
+    route.fulfill({
+      json: {
+        tenantId: 'T001',
+        userId: 'admin-console',
+        roles: ['OPS_MANAGER'],
+        permissions: [
+          'CHAT_USE',
+          'OPS_VIEW',
+          'AUDIT_VIEW',
+          'ACTION_MANAGE',
+          'KNOWLEDGE_MANAGE',
+          'QUALITY_MANAGE',
+          'EVAL_MANAGE',
+        ],
+        authenticated: true,
+        apiKeyRequired: false,
+        authenticationType: 'GatewayAuthentication',
+      },
+    }),
+  )
   await page.route('**/api/demo/questions', (route) =>
     route.fulfill({ json: ['运单 WB202606010023 现在是什么状态？'] }),
   )
@@ -43,6 +64,26 @@ test('admin framework exposes module navigation', async ({ page }) => {
   await expect(page.getByText('物流 Agent 管理台')).toBeVisible()
   await expect(page.getByRole('link', { name: '动作管理' })).toBeVisible()
   await expect(page.getByRole('link', { name: '质量治理' })).toBeVisible()
-  await expect(page.getByRole('link', { name: '知识检索' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '知识运营' })).toBeVisible()
   await expect(page.getByText('累计问题')).toBeVisible()
+})
+
+test('route guard blocks missing management permission', async ({ page }) => {
+  await page.route('**/api/agent/security/context', (route) =>
+    route.fulfill({
+      json: {
+        tenantId: 'T001',
+        userId: 'u-cs-001',
+        roles: ['CUSTOMER_SERVICE'],
+        permissions: ['CHAT_USE', 'AUDIT_VIEW'],
+        authenticated: true,
+        apiKeyRequired: false,
+        authenticationType: 'GatewayAuthentication',
+      },
+    }),
+  )
+
+  await page.goto('/operations/actions')
+  await expect(page).toHaveURL(/\/forbidden/)
+  await expect(page.getByRole('heading', { name: '当前角色无权访问' })).toBeVisible()
 })

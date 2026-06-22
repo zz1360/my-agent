@@ -1,33 +1,32 @@
 import axios, { AxiosError } from 'axios'
-import { useContextStore } from '@/stores/context'
 import type { ApiErrorResponse } from '@/types/api'
 
 export const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
   timeout: 30_000,
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 })
+
+http.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    const requestUrl = String(error.config?.url || '')
+    if (error.response?.status === 401 && !requestUrl.includes('/security/context')) {
+      window.dispatchEvent(new CustomEvent('agent-auth-invalid'))
+    }
+    return Promise.reject(error)
+  },
+)
 
 export function apiUrl(path: string): string {
   const baseUrl = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
   return `${baseUrl}${path}`
 }
 
-http.interceptors.request.use((config) => {
-  const context = useContextStore()
-  config.headers.set('X-Agent-Tenant', context.tenantId)
-  config.headers.set('X-Agent-User', context.userId)
-  config.headers.set('X-Agent-Roles', context.roleHeader)
-  return config
-})
-
 export function contextHeaders(): Record<string, string> {
-  const context = useContextStore()
   return {
     'Content-Type': 'application/json',
-    'X-Agent-Tenant': context.tenantId,
-    'X-Agent-User': context.userId,
-    'X-Agent-Roles': context.roleHeader,
   }
 }
 

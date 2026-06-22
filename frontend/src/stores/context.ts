@@ -1,47 +1,92 @@
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-
-const STORAGE_KEY = 'logistics-agent-context'
-
-interface StoredContext {
-  tenantId?: string
-  userId?: string
-  roles?: string[]
-}
-
-function loadContext(): StoredContext {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') as StoredContext
-  } catch {
-    return {}
-  }
-}
+import { fetchSecurityContext } from '@/api/agent'
+import { errorMessage } from '@/api/http'
+import type { AgentPermission, SecurityContext } from '@/types/api'
 
 export const useContextStore = defineStore('context', () => {
-  const stored = loadContext()
-  const tenantId = ref(stored.tenantId || 'T001')
-  const userId = ref(stored.userId || 'u-cs-001')
-  const roles = ref<string[]>(stored.roles?.length ? stored.roles : ['CUSTOMER_SERVICE'])
+  const tenantId = ref('T001')
+  const userId = ref('api-client')
+  const roles = ref<string[]>([])
+  const permissions = ref<AgentPermission[]>([])
+  const authenticated = ref(false)
+  const initialized = ref(false)
+  const loading = ref(false)
+  const authError = ref('')
+  const apiKeyRequired = ref(false)
+  const authenticationType = ref('none')
 
-  const primaryRole = computed(() => roles.value[0] || 'CUSTOMER_SERVICE')
+  const primaryRole = computed(() => roles.value[0] || 'UNASSIGNED')
   const roleHeader = computed(() => roles.value.join(','))
 
-  function update(next: StoredContext) {
-    tenantId.value = next.tenantId?.trim() || 'T001'
-    userId.value = next.userId?.trim() || 'u-cs-001'
-    roles.value = next.roles?.length ? [...next.roles] : ['CUSTOMER_SERVICE']
+  async function bootstrap(force = false): Promise<boolean> {
+    if (initialized.value && !force) return authenticated.value
+    loading.value = true
+    authError.value = ''
+    try {
+      apply(await fetchSecurityContext())
+      return authenticated.value
+    } catch (error) {
+      authenticated.value = false
+      permissions.value = []
+      authError.value = errorMessage(error)
+      initialized.value = true
+      return false
+    } finally {
+      loading.value = false
+    }
   }
 
-  watch(
-    [tenantId, userId, roles],
-    () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ tenantId: tenantId.value, userId: userId.value, roles: roles.value }),
-      )
-    },
-    { deep: true },
-  )
+  function apply(context: SecurityContext) {
+    tenantId.value = context.tenantId
+    userId.value = context.userId
+    roles.value = [...context.roles]
+    permissions.value = [...context.permissions]
+    authenticated.value = context.authenticated
+    apiKeyRequired.value = context.apiKeyRequired
+    authenticationType.value = context.authenticationType
+    initialized.value = true
+  }
 
-  return { tenantId, userId, roles, primaryRole, roleHeader, update }
+  function hasPermission(permission?: AgentPermission): boolean {
+    return !permission || permissions.value.includes(permission)
+  }
+
+  function reauthenticate() {
+    const entryUrl = String(import.meta.env.VITE_AUTH_ENTRY_URL || '').trim()
+    if (entryUrl) {
+      window.location.assign(entryUrl)
+      return
+    }
+    initialized.value = false
+    window.location.reload()
+  }
+
+  function logout() {
+    const logoutUrl = String(import.meta.env.VITE_LOGOUT_URL || '').trim()
+    initialized.value = false
+    authenticated.value = false
+    permissions.value = []
+    if (logoutUrl) window.location.assign(logoutUrl)
+    else window.location.assign('/access')
+  }
+
+  return {
+    tenantId,
+    userId,
+    roles,
+    permissions,
+    primaryRole,
+    roleHeader,
+    authenticated,
+    initialized,
+    loading,
+    authError,
+    apiKeyRequired,
+    authenticationType,
+    bootstrap,
+    hasPermission,
+    reauthenticate,
+    logout,
+  }
 })

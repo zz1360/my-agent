@@ -22,14 +22,38 @@ const context = useContextStore()
 const contextDrawer = ref(false)
 const mobileNav = ref(false)
 
-const navItems = [
-  { to: '/operations/overview', label: '运行概览', icon: Activity },
-  { to: '/operations/actions', label: '动作管理', icon: ClipboardCheck },
-  { to: '/operations/quality', label: '质量治理', icon: ShieldCheck },
-  { to: '/operations/evaluation', label: '评测中心', icon: FileSearch },
-  { to: '/operations/knowledge', label: '知识检索', icon: BookOpen },
-  { to: '/operations/audit', label: '审计追踪', icon: FileSearch },
-]
+const allNavItems = [
+  { to: '/operations/overview', label: '运行概览', icon: Activity, permission: 'OPS_VIEW' },
+  {
+    to: '/operations/actions',
+    label: '动作管理',
+    icon: ClipboardCheck,
+    permission: 'ACTION_MANAGE',
+  },
+  {
+    to: '/operations/quality',
+    label: '质量治理',
+    icon: ShieldCheck,
+    permission: 'QUALITY_MANAGE',
+  },
+  {
+    to: '/operations/evaluation',
+    label: '评测中心',
+    icon: FileSearch,
+    permission: 'EVAL_MANAGE',
+  },
+  {
+    to: '/operations/knowledge',
+    label: '知识运营',
+    icon: BookOpen,
+    permission: 'KNOWLEDGE_MANAGE',
+  },
+  { to: '/operations/audit', label: '审计追踪', icon: FileSearch, permission: 'AUDIT_VIEW' },
+] as const
+
+const navItems = computed(() =>
+  allNavItems.filter((item) => context.hasPermission(item.permission)),
+)
 
 const pageTitle = computed(() => String(route.meta.title || '物流 Agent 管理台'))
 </script>
@@ -75,8 +99,10 @@ const pageTitle = computed(() => String(route.meta.title || '物流 Agent 管理
           </RouterLink>
         </nav>
         <div class="sidebar-footer">
-          <span class="status-dot up" />
-          <div><strong>Spring Boot API</strong><small>通过 /api 代理访问</small></div>
+          <span :class="['status-dot', context.authenticated ? 'up' : 'warn']" />
+          <div>
+            <strong>企业身份已验证</strong><small>{{ context.authenticationType }}</small>
+          </div>
         </div>
       </aside>
       <button

@@ -1,44 +1,152 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { RefreshCw } from '@lucide/vue'
-import { fetchQualityMetrics } from '@/api/agent'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ClipboardPlus, Play, RefreshCw } from '@lucide/vue'
+import {
+  createQualityTask,
+  evaluateQualityAlerts,
+  fetchQualityAlerts,
+  fetchQualityMetrics,
+  fetchQualityTasks,
+  transitionQualityTask,
+} from '@/api/agent'
 import { errorMessage } from '@/api/http'
-import { useContextStore } from '@/stores/context'
-import type { QualityMetrics } from '@/types/api'
+import { contextParams, contextPayload } from '@/utils/context'
+import { formatTime, percent } from '@/utils/format'
+import type { QualityAlert, QualityMetrics, QualityTask } from '@/types/api'
 
-const context = useContextStore()
 const metrics = ref<QualityMetrics | null>(null)
+const alerts = ref<QualityAlert[]>([])
+const tasks = ref<QualityTask[]>([])
 const loading = ref(false)
+const activeTab = ref('alerts')
+const alertStatus = ref('OPEN')
+const taskStatus = ref('')
+const taskDialog = ref(false)
+const selectedTask = ref<QualityTask | null>(null)
+const taskForm = reactive({ status: 'PROCESSING', ownerUserId: '', comment: '' })
+
 const cards = computed(() => [
   ['负反馈', metrics.value?.notHelpfulFeedback || 0, '条'],
   ['评测候选', metrics.value?.candidateCount || 0, '条'],
   ['已通过候选', metrics.value?.approvedCandidates || 0, '条'],
-  ['候选转化率', `${Math.round(Number(metrics.value?.candidateConversionRate || 0) * 100)}%`, ''],
-  ['RAG 实验通过率', `${Math.round(Number(metrics.value?.ragExperimentPassRate || 0) * 100)}%`, ''],
+  ['候选转化率', percent(metrics.value?.candidateConversionRate), ''],
+  ['RAG 实验通过率', percent(metrics.value?.ragExperimentPassRate), ''],
 ])
 
 onMounted(load)
 
 async function load() {
   loading.value = true
-  const params = new URLSearchParams({ tenantId: context.tenantId, userId: context.userId })
-  context.roles.forEach((role) => params.append('roles', role))
   try {
-    metrics.value = await fetchQualityMetrics(params)
+    const metricsParams = contextParams()
+    const alertParams = contextParams({ limit: '100' })
+    const taskParams = contextParams({ limit: '100' })
+    if (alertStatus.value) alertParams.set('status', alertStatus.value)
+    if (taskStatus.value) taskParams.set('status', taskStatus.value)
+    ;[metrics.value, alerts.value, tasks.value] = await Promise.all([
+      fetchQualityMetrics(metricsParams),
+      fetchQualityAlerts(alertParams),
+      fetchQualityTasks(taskParams),
+    ])
   } catch (error) {
     ElMessage.error(errorMessage(error))
   } finally {
     loading.value = false
   }
 }
+
+async function evaluate() {
+  try {
+    await ElMessageBox.confirm('将按当前规则重新计算质量告警。', '运行告警评估', {
+      confirmButtonText: '开始评估',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    loading.value = true
+    const result = await evaluateQualityAlerts(contextParams())
+    ElMessage.success(`评估完成，当前开放告警 ${result.openAlerts} 条`)
+    await load()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
+  } finally {
+    loading.value = false
+  }
+}
+
+async function createTask(alert: QualityAlert) {
+  try {
+    await ElMessageBox.confirm(`从告警“${alert.summary}”创建治理任务？`, '创建治理任务', {
+      confirmButtonText: '创建任务',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    loading.value = true
+    const result = await createQualityTask(alert.alertId, contextParams())
+    ElMessage.success(`任务已创建：${result.taskId}`)
+    activeTab.value = 'tasks'
+    await load()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
+  } finally {
+    loading.value = false
+  }
+}
+
+function openTask(task: QualityTask) {
+  selectedTask.value = task
+  taskForm.status = task.status === 'OPEN' ? 'PROCESSING' : task.status
+  taskForm.ownerUserId = task.ownerUserId || ''
+  taskForm.comment = task.lastComment || ''
+  taskDialog.value = true
+}
+
+async function transitionTask() {
+  if (!selectedTask.value || !taskForm.comment.trim()) {
+    ElMessage.warning('处理意见不能为空')
+    return
+  }
+  loading.value = true
+  try {
+    await transitionQualityTask(
+      selectedTask.value.taskId,
+      contextPayload({
+        status: taskForm.status,
+        ownerUserId: taskForm.ownerUserId.trim(),
+        comment: taskForm.comment.trim(),
+      }),
+    )
+    ElMessage.success('任务状态已更新')
+    taskDialog.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(errorMessage(error))
+  } finally {
+    loading.value = false
+  }
+}
+
+function severityType(value: string) {
+  if (value === 'CRITICAL' || value === 'HIGH') return 'danger'
+  if (value === 'MEDIUM') return 'warning'
+  return 'info'
+}
+
+function statusType(value: string) {
+  if (value === 'RESOLVED') return 'success'
+  if (value === 'REJECTED') return 'danger'
+  return 'warning'
+}
 </script>
 
 <template>
   <div class="quality-page" v-loading="loading">
     <section class="toolbar">
-      <div><strong>反馈质量指标</strong><span>从用户反馈到评测资产的转化情况</span></div>
-      <el-button :icon="RefreshCw" @click="load">刷新</el-button>
+      <div><strong>质量治理</strong><span>反馈、告警与治理任务</span></div>
+      <div>
+        <el-button :icon="RefreshCw" @click="load">刷新</el-button
+        ><el-button type="primary" :icon="Play" @click="evaluate">运行评估</el-button>
+      </div>
     </section>
     <section class="metric-grid">
       <div v-for="card in cards" :key="String(card[0])">
@@ -48,10 +156,121 @@ async function load() {
         >
       </div>
     </section>
-    <section class="raw-section">
-      <h2>质量数据</h2>
-      <pre>{{ JSON.stringify(metrics, null, 2) }}</pre>
+
+    <section class="governance-panel">
+      <el-tabs v-model="activeTab">
+        <el-tab-pane :label="`质量告警 ${alerts.length}`" name="alerts">
+          <div class="filter-row">
+            <el-select v-model="alertStatus" placeholder="全部状态" clearable @change="load"
+              ><el-option label="开放" value="OPEN" /><el-option label="已解决" value="RESOLVED"
+            /></el-select>
+          </div>
+          <el-table :data="alerts" stripe empty-text="暂无质量告警">
+            <el-table-column prop="summary" label="告警" min-width="280" show-overflow-tooltip />
+            <el-table-column prop="metricType" label="指标" min-width="150" />
+            <el-table-column label="当前/阈值" width="130"
+              ><template #default="scope"
+                >{{ scope.row.metricValue }} / {{ scope.row.thresholdValue }}</template
+              ></el-table-column
+            >
+            <el-table-column label="级别" width="90"
+              ><template #default="scope"
+                ><el-tag :type="severityType(scope.row.severity)" effect="plain">{{
+                  scope.row.severity
+                }}</el-tag></template
+              ></el-table-column
+            >
+            <el-table-column label="状态" width="100"
+              ><template #default="scope"
+                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
+                  scope.row.status
+                }}</el-tag></template
+              ></el-table-column
+            >
+            <el-table-column label="最近触发" min-width="170"
+              ><template #default="scope">{{
+                formatTime(scope.row.lastTriggeredAt)
+              }}</template></el-table-column
+            >
+            <el-table-column label="操作" width="120" fixed="right"
+              ><template #default="scope"
+                ><el-button
+                  v-if="!scope.row.taskId && scope.row.status === 'OPEN'"
+                  link
+                  type="primary"
+                  :icon="ClipboardPlus"
+                  @click="createTask(scope.row)"
+                  >建任务</el-button
+                ><span v-else class="muted">{{ scope.row.taskId || '-' }}</span></template
+              ></el-table-column
+            >
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`治理任务 ${tasks.length}`" name="tasks">
+          <div class="filter-row">
+            <el-select v-model="taskStatus" placeholder="全部状态" clearable @change="load"
+              ><el-option label="待处理" value="OPEN" /><el-option
+                label="处理中"
+                value="PROCESSING" /><el-option label="已解决" value="RESOLVED" /><el-option
+                label="已驳回"
+                value="REJECTED"
+            /></el-select>
+          </div>
+          <el-table :data="tasks" stripe empty-text="暂无治理任务">
+            <el-table-column prop="taskId" label="任务 ID" min-width="170" />
+            <el-table-column prop="title" label="任务" min-width="260" show-overflow-tooltip />
+            <el-table-column prop="ownerRole" label="负责角色" width="130" />
+            <el-table-column prop="ownerUserId" label="负责人" width="130" />
+            <el-table-column label="状态" width="110"
+              ><template #default="scope"
+                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
+                  scope.row.status
+                }}</el-tag></template
+              ></el-table-column
+            >
+            <el-table-column label="更新时间" min-width="170"
+              ><template #default="scope">{{
+                formatTime(scope.row.updatedAt)
+              }}</template></el-table-column
+            >
+            <el-table-column label="操作" width="100" fixed="right"
+              ><template #default="scope"
+                ><el-button link type="primary" @click="openTask(scope.row)"
+                  >处理</el-button
+                ></template
+              ></el-table-column
+            >
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
     </section>
+
+    <el-dialog v-model="taskDialog" title="处理治理任务" width="min(520px, 92vw)">
+      <el-form label-position="top">
+        <el-form-item label="任务"
+          ><el-input :model-value="selectedTask?.title" disabled
+        /></el-form-item>
+        <el-form-item label="负责人"
+          ><el-input v-model="taskForm.ownerUserId" placeholder="用户 ID"
+        /></el-form-item>
+        <el-form-item label="状态"
+          ><el-select v-model="taskForm.status" style="width: 100%"
+            ><el-option label="待处理" value="OPEN" /><el-option
+              label="处理中"
+              value="PROCESSING" /><el-option label="已解决" value="RESOLVED" /><el-option
+              label="已驳回"
+              value="REJECTED" /></el-select
+        ></el-form-item>
+        <el-form-item label="处理意见"
+          ><el-input v-model="taskForm.comment" type="textarea" :rows="4"
+        /></el-form-item>
+      </el-form>
+      <template #footer
+        ><el-button @click="taskDialog = false">取消</el-button
+        ><el-button type="primary" @click="transitionTask">保存</el-button></template
+      >
+    </el-dialog>
   </div>
 </template>
 
@@ -69,12 +288,11 @@ async function load() {
   border-radius: 6px;
   background: var(--surface);
 }
-.toolbar div {
+.toolbar > div:first-child {
   display: flex;
   flex-direction: column;
 }
-.toolbar strong,
-.raw-section h2 {
+.toolbar strong {
   font-size: 13px;
 }
 .toolbar span {
@@ -112,23 +330,24 @@ async function load() {
   color: var(--muted);
   font-size: 10px;
 }
-.raw-section {
+.governance-panel {
   margin-top: 12px;
-  padding: 14px;
+  padding: 0 14px 14px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
 }
-.raw-section h2 {
-  margin: 0 0 10px;
+.filter-row {
+  display: flex;
+  width: 180px;
+  padding-bottom: 10px;
 }
-.raw-section pre {
-  max-height: 430px;
-  margin: 0;
-  overflow: auto;
-  color: #435160;
-  font-size: 11px;
-  line-height: 1.6;
+.filter-row :deep(.el-select) {
+  width: 100%;
+}
+.muted {
+  color: var(--muted);
+  font-size: 10px;
 }
 @media (max-width: 850px) {
   .metric-grid {
@@ -141,6 +360,12 @@ async function load() {
 @media (max-width: 650px) {
   .quality-page {
     padding: 10px;
+  }
+  .toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
   }
 }
 </style>

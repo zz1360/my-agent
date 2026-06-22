@@ -6,6 +6,7 @@ public record SecurityContextResponse(
         String tenantId,
         String userId,
         List<String> roles,
+        List<String> permissions,
         boolean authenticated,
         boolean apiKeyRequired,
         String authenticationType

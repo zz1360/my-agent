@@ -327,7 +327,12 @@ async function scrollToBottom() {
         <button class="icon-button" title="运行上下文" @click="contextDrawer = true">
           <Settings :size="18" />
         </button>
-        <button class="icon-button" title="进入管理台" @click="router.push('/operations/overview')">
+        <button
+          v-if="context.hasPermission('OPS_VIEW')"
+          class="icon-button"
+          title="进入管理台"
+          @click="router.push('/operations/overview')"
+        >
           <LayoutDashboard :size="18" />
         </button>
       </div>

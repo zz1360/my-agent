@@ -236,6 +236,8 @@ class LogisticsAgentApplicationTests {
         assertThat(security.get("tenantId").asText()).isEqualTo("T001");
         assertThat(security.get("userId").asText()).isEqualTo("u-enterprise");
         assertThat(security.get("roles")).anySatisfy(role -> assertThat(role.asText()).isEqualTo("OPS_MANAGER"));
+        assertThat(security.get("permissions")).anySatisfy(permission ->
+                assertThat(permission.asText()).isEqualTo("ACTION_MANAGE"));
         assertThat(security.get("apiKeyRequired").asBoolean()).isFalse();
 
         String sourceBody = mockMvc.perform(get("/api/agent/business-data/sources")

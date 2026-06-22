@@ -73,6 +73,25 @@ export interface ApiErrorResponse {
   traceId?: string
 }
 
+export type AgentPermission =
+  | 'CHAT_USE'
+  | 'OPS_VIEW'
+  | 'AUDIT_VIEW'
+  | 'ACTION_MANAGE'
+  | 'KNOWLEDGE_MANAGE'
+  | 'QUALITY_MANAGE'
+  | 'EVAL_MANAGE'
+
+export interface SecurityContext {
+  tenantId: string
+  userId: string
+  roles: string[]
+  permissions: AgentPermission[]
+  authenticated: boolean
+  apiKeyRequired: boolean
+  authenticationType: string
+}
+
 export interface OpsReadiness {
   application: string
   activeProfiles: string[]
@@ -93,15 +112,56 @@ export interface OpsMetrics {
 }
 
 export interface AgentAction {
+  tenantId: string
   actionId: string
   traceId: string
+  conversationId?: string
   customerId: string
+  waybillId?: string
   actionType: string
   title: string
+  priority?: string
   riskLevel: string
   status: string
+  draftContent?: string
+  evidenceJson?: string
+  createdBy?: string
+  reviewerId?: string
+  reviewComment?: string
   createdAt: string
+  updatedAt?: string
+  reviewedAt?: string
   [key: string]: unknown
+}
+
+export interface ActionExecution {
+  tenantId: string
+  executionId: string
+  actionId: string
+  actionType: string
+  executorName: string
+  targetSystem: string
+  externalRefId?: string
+  idempotencyKey: string
+  lowRisk: boolean
+  status: string
+  requestJson?: string
+  responseJson?: string
+  failureReason?: string
+  retryCount: number
+  maxRetryCount: number
+  nextRetryAt?: string
+  executedBy: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface ActionBusinessLink {
+  businessTable?: string
+  businessId?: string
+  status: string
+  latestExecutionId?: string
+  traceId?: string
 }
 
 export interface QualityMetrics {
@@ -135,6 +195,35 @@ export interface EvalRun {
   [key: string]: unknown
 }
 
+export interface EvalReleaseGate {
+  gateId: string
+  tenantId: string
+  suiteId: string
+  status: string
+  candidateRunId: string
+  baselineRunId?: string
+  totalCases: number
+  passedCases: number
+  failedCases: number
+  passRate: number
+  minPassRate: number
+  regressedCases: number
+  maxRegressions: number
+  reasons: string[]
+  createdAt: string
+}
+
+export interface EvalRunComparison {
+  baselineRunId: string
+  candidateRunId: string
+  totalCases: number
+  unchangedCases: number
+  improvedCases: number
+  regressedCases: number
+  newCases: number
+  removedCases: number
+}
+
 export interface RetrievalStatus {
   defaultMode: string
   vectorStoreEnabled: boolean
@@ -161,6 +250,69 @@ export interface SearchPreview {
   vectorReady: boolean
   topK: number
   hits: SearchHit[]
+}
+
+export interface KnowledgeDocument {
+  tenantId: string
+  docId: string
+  baseDocId: string
+  title: string
+  docType: string
+  bizDomain: string
+  version: string
+  sourceUrl?: string
+  aclRoles: string
+  effectiveFrom?: string
+  effectiveTo?: string
+  status: string
+  content: string
+  chunkCount: number
+  indexJobId?: string
+  publishedAt?: string
+  indexedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface KnowledgeIndexJob {
+  jobId: string
+  triggerType: string
+  requestedBy: string
+  status: string
+  documentId?: string
+  chunkCount: number
+  vectorEnabled: boolean
+  vectorReady: boolean
+  errorMessage?: string
+  createdAt: string
+  finishedAt?: string
+}
+
+export interface QualityAlert {
+  alertId: string
+  ruleId: string
+  metricType: string
+  severity: string
+  status: string
+  metricValue: number
+  thresholdValue: number
+  summary: string
+  taskId?: string
+  lastTriggeredAt: string
+}
+
+export interface QualityTask {
+  alertId: string
+  taskId: string
+  actionId: string
+  title: string
+  description: string
+  ownerRole: string
+  ownerUserId?: string
+  status: string
+  lastComment?: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface RagAudit {

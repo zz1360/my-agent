@@ -1,6 +1,7 @@
 package com.superagent.logistics.api;
 
 import com.superagent.logistics.api.dto.SecurityContextResponse;
+import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
 import com.superagent.logistics.security.EnterpriseSecurityProperties;
 import org.springframework.security.core.Authentication;
@@ -18,9 +19,12 @@ import java.util.List;
 public class AgentSecurityController {
 
     private final EnterpriseSecurityProperties properties;
+    private final AgentPermissionService permissionService;
 
-    public AgentSecurityController(EnterpriseSecurityProperties properties) {
+    public AgentSecurityController(EnterpriseSecurityProperties properties,
+                                   AgentPermissionService permissionService) {
         this.properties = properties;
+        this.permissionService = permissionService;
     }
 
     @GetMapping("/context")
@@ -35,6 +39,7 @@ public class AgentSecurityController {
                 context.tenantId(),
                 context.userId(),
                 roles,
+                permissionService.permissions(context),
                 authentication != null && authentication.isAuthenticated(),
                 properties.isApiKeyRequired(),
                 authentication == null ? "none" : authentication.getClass().getSimpleName()
