@@ -59,8 +59,10 @@ public class DeploymentConfigValidator implements ApplicationRunner {
         String environment = deploymentProperties.getEnvironment() == null
                 ? "local"
                 : deploymentProperties.getEnvironment().trim().toLowerCase(Locale.ROOT);
-        if ("prod".equals(environment) && !securityProperties.isApiKeyRequired()) {
-            issues.add("prod environment requires AGENT_API_KEY");
+        if ("prod".equals(environment)
+                && !securityProperties.isApiKeyRequired()
+                && !securityProperties.isOidcEnabled()) {
+            issues.add("prod environment requires AGENT_API_KEY or AGENT_AUTH_MODE=oidc-bff");
         }
         if (deepSeekProperties.isEnabled() && isBlank(deepSeekProperties.getApiKeyFile())) {
             issues.add("DeepSeek is enabled but DEEPSEEK_API_KEY_FILE is empty");

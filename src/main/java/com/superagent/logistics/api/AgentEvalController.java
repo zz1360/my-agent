@@ -6,8 +6,10 @@ import com.superagent.logistics.api.dto.EvalReleaseGateResponse;
 import com.superagent.logistics.api.dto.EvalRunComparisonResponse;
 import com.superagent.logistics.api.dto.EvalRunResponse;
 import com.superagent.logistics.api.dto.EvalSuiteResponse;
+import com.superagent.logistics.api.dto.PageResponse;
 import com.superagent.logistics.eval.AgentEvalService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -45,6 +47,13 @@ public class AgentEvalController {
         return evalService.listRuns(tenantId, limit);
     }
 
+    @GetMapping("/runs/page")
+    public PageResponse<EvalRunResponse> listRunsPage(@RequestParam(required = false) String tenantId,
+                                                       @RequestParam(defaultValue = "1") int page,
+                                                       @RequestParam(defaultValue = "20") int size) {
+        return evalService.pageRuns(tenantId, page, size);
+    }
+
     @GetMapping("/runs/compare")
     public EvalRunComparisonResponse compareRuns(@RequestParam String baselineRunId,
                                                  @RequestParam String candidateRunId) {
@@ -58,7 +67,17 @@ public class AgentEvalController {
         return evalService.listReleaseGates(tenantId, suiteId, limit);
     }
 
+    @GetMapping("/release-gates/page")
+    public PageResponse<EvalReleaseGateResponse> listReleaseGatesPage(
+            @RequestParam(required = false) String tenantId,
+            @RequestParam(required = false) String suiteId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return evalService.pageReleaseGates(tenantId, suiteId, page, size);
+    }
+
     @PostMapping("/run")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('EVAL_MANAGE')")
     public EvalRunResponse run(@RequestParam(required = false) String tenantId,
                                @RequestParam(required = false) String modelVersion,
                                @RequestParam(required = false) String knowledgeVersion,
@@ -67,6 +86,7 @@ public class AgentEvalController {
     }
 
     @PostMapping("/suites/{suiteId}/run")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('EVAL_MANAGE')")
     public EvalRunResponse runSuite(@PathVariable String suiteId,
                                     @RequestParam(required = false) String tenantId,
                                     @RequestParam(required = false) String modelVersion,
@@ -76,6 +96,7 @@ public class AgentEvalController {
     }
 
     @PostMapping("/release-gates/run")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('EVAL_MANAGE')")
     public EvalReleaseGateResponse runReleaseGate(@RequestBody(required = false) EvalReleaseGateRequest request) {
         return evalService.runReleaseGate(request);
     }

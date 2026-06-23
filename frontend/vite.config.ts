@@ -3,6 +3,9 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -14,7 +17,12 @@ export default defineConfig(({ mode }) => {
   if (env.DEV_AGENT_API_KEY) proxyHeaders['X-Agent-Api-Key'] = env.DEV_AGENT_API_KEY
 
   return {
-    plugins: [vue(), vueDevTools()],
+    plugins: [
+      vue(),
+      vueDevTools(),
+      AutoImport({ dts: false, resolvers: [ElementPlusResolver()] }),
+      Components({ resolvers: [ElementPlusResolver()] }),
+    ],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -33,6 +41,17 @@ export default defineConfig(({ mode }) => {
           target: env.DEV_AGENT_BACKEND_URL || 'http://127.0.0.1:8080',
           changeOrigin: true,
           headers: proxyHeaders,
+        },
+      },
+    },
+    build: {
+      manifest: true,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('markdown-it') || id.includes('dompurify')) return 'markdown'
+            if (id.includes('@tanstack')) return 'query'
+          },
         },
       },
     },

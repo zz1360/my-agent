@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Eye, Play, RefreshCw, RotateCcw, Search, X } from '@lucide/vue'
 import {
@@ -7,7 +8,7 @@ import {
   fetchAction,
   fetchActionBusinessLink,
   fetchActionExecutions,
-  fetchActions,
+  fetchActionsPage,
   retryExecution,
   reviewAction,
 } from '@/api/agent'
@@ -15,12 +16,15 @@ import { errorMessage } from '@/api/http'
 import { contextParams, contextPayload } from '@/utils/context'
 import { formatTime } from '@/utils/format'
 import type { ActionBusinessLink, ActionExecution, AgentAction } from '@/types/api'
+import ServerPagination from '@/components/ServerPagination.vue'
+import StatusTag from '@/components/StatusTag.vue'
+import { useConfirmAction } from '@/composables/useConfirmAction'
 
-const rows = ref<AgentAction[]>([])
-const loading = ref(false)
 const operating = ref(false)
 const customerId = ref('')
 const status = ref('')
+const appliedCustomerId = ref('')
+const appliedStatus = ref('')
 const page = ref(1)
 const pageSize = ref(10)
 const drawerOpen = ref(false)
@@ -28,27 +32,41 @@ const selected = ref<AgentAction | null>(null)
 const executions = ref<ActionExecution[]>([])
 const businessLink = ref<ActionBusinessLink | null>(null)
 const activeTab = ref('detail')
+const { confirm } = useConfirmAction()
 
-const pageRows = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return rows.value.slice(start, start + pageSize.value)
+const actionsQuery = useQuery({
+  queryKey: computed(() => [
+    'actions',
+    appliedCustomerId.value,
+    appliedStatus.value,
+    page.value,
+    pageSize.value,
+  ]),
+  queryFn: () => {
+    const params = contextParams({ page: String(page.value), size: String(pageSize.value) })
+    if (appliedCustomerId.value) params.set('customerId', appliedCustomerId.value)
+    if (appliedStatus.value) params.set('status', appliedStatus.value)
+    return fetchActionsPage(params)
+  },
+})
+const rows = computed(() => actionsQuery.data.value?.items || [])
+const total = computed(() => actionsQuery.data.value?.total || 0)
+const loading = computed(() => actionsQuery.isFetching.value)
+
+watch(actionsQuery.error, (error) => {
+  if (error) ElMessage.error(errorMessage(error))
 })
 
-onMounted(load)
-
 async function load() {
-  loading.value = true
-  const params = contextParams({ limit: '100' })
-  if (customerId.value.trim()) params.set('customerId', customerId.value.trim())
-  if (status.value) params.set('status', status.value)
-  try {
-    rows.value = await fetchActions(params)
-    page.value = 1
-  } catch (error) {
-    ElMessage.error(errorMessage(error))
-  } finally {
-    loading.value = false
-  }
+  appliedCustomerId.value = customerId.value.trim()
+  appliedStatus.value = status.value
+  page.value = 1
+  await actionsQuery.refetch()
+}
+
+function changePage(nextPage: number, nextSize: number) {
+  page.value = nextPage
+  pageSize.value = nextSize
 }
 
 async function openDetail(row: AgentAction) {
@@ -100,11 +118,7 @@ async function review(nextStatus: 'APPROVED' | 'REJECTED') {
 async function execute() {
   if (!selected.value) return
   try {
-    await ElMessageBox.confirm(
-      `即将执行“${selected.value.title}”，动作会写入目标业务系统。`,
-      '确认执行动作',
-      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' },
-    )
+    await confirm(`即将执行“${selected.value.title}”，动作会写入目标业务系统。`, '确认执行动作')
     operating.value = true
     const execution = await executeAction(
       selected.value.actionId,
@@ -128,11 +142,7 @@ async function execute() {
 
 async function retry(row: ActionExecution) {
   try {
-    await ElMessageBox.confirm(`确认重试执行 ${row.executionId}？`, '失败重试', {
-      confirmButtonText: '确认重试',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
+    await confirm(`确认重试执行 ${row.executionId}？`, '失败重试')
     operating.value = true
     await retryExecution(
       row.executionId,
@@ -145,12 +155,6 @@ async function retry(row: ActionExecution) {
   } finally {
     operating.value = false
   }
-}
-
-function tagType(value: string) {
-  if (['APPROVED', 'APPLIED', 'SUCCESS', 'SUCCEEDED'].includes(value)) return 'success'
-  if (['REJECTED', 'FAILED'].includes(value)) return 'danger'
-  return 'warning'
 }
 </script>
 
@@ -174,9 +178,9 @@ function tagType(value: string) {
           <h2>动作草稿</h2>
           <p>人工复核、执行与失败重试</p>
         </div>
-        <el-tag effect="plain">{{ rows.length }} 条</el-tag>
+        <el-tag effect="plain">{{ total }} 条</el-tag>
       </div>
-      <el-table v-loading="loading" :data="pageRows" stripe empty-text="暂无动作草稿">
+      <el-table v-loading="loading" :data="rows" stripe empty-text="暂无动作草稿">
         <el-table-column prop="actionId" label="动作 ID" min-width="180" show-overflow-tooltip />
         <el-table-column prop="customerId" label="客户" width="100" />
         <el-table-column prop="actionType" label="类型" min-width="160" />
@@ -184,7 +188,7 @@ function tagType(value: string) {
         <el-table-column prop="riskLevel" label="风险" width="80" />
         <el-table-column label="状态" width="130">
           <template #default="scope">
-            <el-tag :type="tagType(scope.row.status)" effect="plain">{{ scope.row.status }}</el-tag>
+            <StatusTag :value="scope.row.status" />
           </template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
@@ -195,15 +199,7 @@ function tagType(value: string) {
           </template>
         </el-table-column>
       </el-table>
-      <div class="pagination-row">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="rows.length"
-          :page-sizes="[10, 20, 50]"
-          layout="total, sizes, prev, pager, next"
-        />
-      </div>
+      <ServerPagination :page="page" :size="pageSize" :total="total" @change="changePage" />
     </section>
 
     <el-drawer v-model="drawerOpen" title="动作工作台" size="min(720px, 94vw)">
@@ -214,7 +210,7 @@ function tagType(value: string) {
               <strong>{{ selected.title }}</strong
               ><span>{{ selected.actionId }}</span>
             </div>
-            <el-tag :type="tagType(selected.status)" effect="plain">{{ selected.status }}</el-tag>
+            <StatusTag :value="selected.status" />
           </div>
           <el-tabs v-model="activeTab">
             <el-tab-pane label="动作详情" name="detail">
@@ -247,9 +243,7 @@ function tagType(value: string) {
                 <el-table-column prop="targetSystem" label="目标系统" min-width="120" />
                 <el-table-column label="状态" width="100">
                   <template #default="scope">
-                    <el-tag :type="tagType(scope.row.status)" effect="plain">{{
-                      scope.row.status
-                    }}</el-tag>
+                    <StatusTag :value="scope.row.status" />
                   </template>
                 </el-table-column>
                 <el-table-column label="重试" width="80">

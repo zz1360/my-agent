@@ -88,4 +88,4 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Run end-to-end tests
-        run: pnpm test:e2e --project=chromium
+        run: pnpm test:e2e --project=chromium --project=mobile-chrome

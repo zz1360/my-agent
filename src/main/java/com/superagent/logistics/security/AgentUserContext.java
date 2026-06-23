@@ -9,6 +9,10 @@ public record AgentUserContext(
         Set<String> roles
 ) {
     public static AgentUserContext from(String tenantId, String userId, List<String> roles) {
+        AgentUserContext trusted = EnterpriseIdentityContext.current();
+        if (trusted != null) {
+            return trusted;
+        }
         String resolvedTenant = tenantId == null || tenantId.isBlank() ? "T001" : tenantId;
         String resolvedUser = userId == null || userId.isBlank() ? "u-demo-cs" : userId;
         Set<String> resolvedRoles = roles == null || roles.isEmpty()

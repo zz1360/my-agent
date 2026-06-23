@@ -29,6 +29,10 @@ public class AgentApiKeyAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
+        if (properties.isOidcEnabled()) {
+            filterChain.doFilter(request, response);
+            return;
+        }
         if (requiresApiKey(request) && !hasValidApiKey(request)) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType("application/json;charset=UTF-8");
@@ -38,11 +42,21 @@ public class AgentApiKeyAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        SecurityContextHolder.getContext().setAuthentication(buildAuthentication(request));
+        boolean installedAuthentication = SecurityContextHolder.getContext().getAuthentication() == null;
+        if (installedAuthentication) {
+            SecurityContextHolder.getContext().setAuthentication(buildAuthentication(request));
+        }
+        if (properties.isApiKeyRequired()
+                && SecurityContextHolder.getContext().getAuthentication().getPrincipal() instanceof AgentUserContext context) {
+            EnterpriseIdentityContext.set(context);
+        }
         try {
             filterChain.doFilter(request, response);
         } finally {
-            SecurityContextHolder.clearContext();
+            if (installedAuthentication) {
+                SecurityContextHolder.clearContext();
+            }
+            EnterpriseIdentityContext.clear();
         }
     }
 

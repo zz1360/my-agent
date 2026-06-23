@@ -20,6 +20,7 @@ import java.util.UUID;
 public class RequestMdcFilter extends OncePerRequestFilter {
 
     private static final String REQUEST_ID_HEADER = "X-Request-Id";
+    private static final String TRACE_ID_HEADER = "X-Trace-Id";
 
     private final EnterpriseSecurityProperties securityProperties;
 
@@ -32,7 +33,9 @@ public class RequestMdcFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         String requestId = requestId(request);
         response.setHeader(REQUEST_ID_HEADER, requestId);
+        response.setHeader(TRACE_ID_HEADER, requestId);
         try (MDC.MDCCloseable ignoredRequest = MDC.putCloseable("requestId", requestId);
+             MDC.MDCCloseable ignoredTrace = MDC.putCloseable("traceId", requestId);
              MDC.MDCCloseable ignoredTenant = MDC.putCloseable("tenantId", headerOrDefault(request, securityProperties.getTenantHeader(), ""));
              MDC.MDCCloseable ignoredUser = MDC.putCloseable("userId", headerOrDefault(request, securityProperties.getUserHeader(), ""));
              MDC.MDCCloseable ignoredPath = MDC.putCloseable("path", request.getRequestURI())) {
@@ -41,7 +44,10 @@ public class RequestMdcFilter extends OncePerRequestFilter {
     }
 
     private String requestId(HttpServletRequest request) {
-        String header = request.getHeader(REQUEST_ID_HEADER);
+        String header = request.getHeader(TRACE_ID_HEADER);
+        if (!StringUtils.hasText(header)) {
+            header = request.getHeader(REQUEST_ID_HEADER);
+        }
         return StringUtils.hasText(header) ? header.trim() : "req-" + UUID.randomUUID().toString().substring(0, 12);
     }
 

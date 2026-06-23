@@ -1,8 +1,13 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { fetchSecurityContext } from '@/api/agent'
+import {
+  fetchCsrfToken,
+  fetchSecurityConfig,
+  fetchSecurityContext,
+  logoutSession,
+} from '@/api/agent'
 import { errorMessage } from '@/api/http'
-import type { AgentPermission, SecurityContext } from '@/types/api'
+import type { AgentPermission, SecurityConfig, SecurityContext } from '@/types/api'
 
 export const useContextStore = defineStore('context', () => {
   const tenantId = ref('T001')
@@ -15,6 +20,12 @@ export const useContextStore = defineStore('context', () => {
   const authError = ref('')
   const apiKeyRequired = ref(false)
   const authenticationType = ref('none')
+  const securityConfig = ref<SecurityConfig>({
+    mode: 'api-key',
+    loginUrl: '',
+    logoutUrl: '',
+    csrfUrl: '',
+  })
 
   const primaryRole = computed(() => roles.value[0] || 'UNASSIGNED')
   const roleHeader = computed(() => roles.value.join(','))
@@ -24,6 +35,10 @@ export const useContextStore = defineStore('context', () => {
     loading.value = true
     authError.value = ''
     try {
+      securityConfig.value = await fetchSecurityConfig()
+      if (securityConfig.value.mode === 'oidc-bff' && securityConfig.value.csrfUrl) {
+        await fetchCsrfToken(securityConfig.value.csrfUrl)
+      }
       apply(await fetchSecurityContext())
       return authenticated.value
     } catch (error) {
@@ -53,7 +68,7 @@ export const useContextStore = defineStore('context', () => {
   }
 
   function reauthenticate() {
-    const entryUrl = String(import.meta.env.VITE_AUTH_ENTRY_URL || '').trim()
+    const entryUrl = securityConfig.value.loginUrl
     if (entryUrl) {
       window.location.assign(entryUrl)
       return
@@ -62,13 +77,19 @@ export const useContextStore = defineStore('context', () => {
     window.location.reload()
   }
 
-  function logout() {
-    const logoutUrl = String(import.meta.env.VITE_LOGOUT_URL || '').trim()
+  async function logout() {
+    const logoutUrl = securityConfig.value.logoutUrl
     initialized.value = false
     authenticated.value = false
     permissions.value = []
-    if (logoutUrl) window.location.assign(logoutUrl)
-    else window.location.assign('/access')
+    if (logoutUrl && securityConfig.value.mode === 'oidc-bff') {
+      try {
+        await logoutSession(logoutUrl)
+      } catch {
+        // The local API-key mode has no server session to invalidate.
+      }
+    }
+    window.location.assign('/access')
   }
 
   return {
@@ -84,6 +105,7 @@ export const useContextStore = defineStore('context', () => {
     authError,
     apiKeyRequired,
     authenticationType,
+    securityConfig,
     bootstrap,
     hasPermission,
     reauthenticate,

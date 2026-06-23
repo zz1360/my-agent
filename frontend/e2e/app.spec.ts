@@ -1,6 +1,13 @@
 import { test, expect } from '@playwright/test'
+import AxeBuilder from '@axe-core/playwright'
 
 test.beforeEach(async ({ page }) => {
+  await page.route('**/api/agent/security/config', (route) =>
+    route.fulfill({
+      json: { mode: 'api-key', loginUrl: '', logoutUrl: '/api/agent/security/logout', csrfUrl: '' },
+    }),
+  )
+  await page.route('**/api/ops/frontend-events', (route) => route.fulfill({ status: 202 }))
   await page.route('**/api/agent/security/context', (route) =>
     route.fulfill({
       json: {
@@ -40,6 +47,34 @@ test.beforeEach(async ({ page }) => {
   )
 })
 
+async function mockOverview(page: import('@playwright/test').Page) {
+  await page.route('**/api/ops/readiness', (route) =>
+    route.fulfill({
+      json: {
+        application: 'logistics-agent',
+        activeProfiles: ['local'],
+        ready: true,
+        checks: [],
+        checkedAt: '2026-06-22T00:00:00Z',
+      },
+    }),
+  )
+  await page.route('**/api/ops/metrics/summary', (route) =>
+    route.fulfill({
+      json: {
+        totalQuestions: 12,
+        averageAgentLatencyMs: 80,
+        latestRagRecallAtK: 0.9,
+        toolCallSuccessRate: 1,
+        releaseGatePassed: 2,
+        releaseGateBlocked: 0,
+        flywayVersion: '17',
+        measuredAt: '2026-06-22T00:00:00Z',
+      },
+    }),
+  )
+}
+
 test('chat workspace streams an answer', async ({ page }) => {
   await page.goto('/')
   await expect(page).toHaveURL(/\/chat$/)
@@ -53,12 +88,7 @@ test('chat workspace streams an answer', async ({ page }) => {
 })
 
 test('admin framework exposes module navigation', async ({ page }) => {
-  await page.route('**/api/ops/readiness', (route) =>
-    route.fulfill({ json: { application: 'logistics-agent', activeProfiles: ['local'], ready: true, checks: [], checkedAt: '2026-06-22T00:00:00Z' } }),
-  )
-  await page.route('**/api/ops/metrics/summary', (route) =>
-    route.fulfill({ json: { totalQuestions: 12, averageAgentLatencyMs: 80, latestRagRecallAtK: 0.9, toolCallSuccessRate: 1, releaseGatePassed: 2, releaseGateBlocked: 0, flywayVersion: '17', measuredAt: '2026-06-22T00:00:00Z' } }),
-  )
+  await mockOverview(page)
 
   await page.goto('/operations/overview')
   await expect(page.getByText('物流 Agent 管理台')).toBeVisible()
@@ -66,6 +96,38 @@ test('admin framework exposes module navigation', async ({ page }) => {
   await expect(page.getByRole('link', { name: '质量治理' })).toBeVisible()
   await expect(page.getByRole('link', { name: '知识运营' })).toBeVisible()
   await expect(page.getByText('累计问题')).toBeVisible()
+})
+
+test('admin shell has no serious accessibility violations', async ({ page }) => {
+  await mockOverview(page)
+  await page.goto('/operations/overview')
+  await expect(page.getByText('物流 Agent 管理台')).toBeVisible()
+  const results = await new AxeBuilder({ page }).exclude('.vue-devtools__anchor-btn').analyze()
+  expect(
+    results.violations.filter((item) => ['serious', 'critical'].includes(item.impact || '')),
+  ).toEqual([])
+})
+
+test('@mobile admin navigation remains usable and layout-stable', async ({ page }) => {
+  await mockOverview(page)
+  await page.goto('/operations/overview')
+  await expect(page.getByTitle('打开导航')).toBeVisible()
+  await page.getByTitle('打开导航').click()
+  await expect(page.getByRole('link', { name: '动作管理' })).toBeVisible()
+
+  const layout = await page.evaluate(() => {
+    const topbar = document.querySelector('.admin-topbar')!.getBoundingClientRect()
+    const sidebar = document.querySelector('.admin-sidebar')!.getBoundingClientRect()
+    const main = document.querySelector('.admin-main')!.getBoundingClientRect()
+    return JSON.stringify({
+      viewport: [window.innerWidth, window.innerHeight],
+      topbar: [Math.round(topbar.width), Math.round(topbar.height)],
+      sidebar: [Math.round(sidebar.width), Math.round(sidebar.height)],
+      main: [Math.round(main.width), Math.round(main.left)],
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    })
+  })
+  expect(layout).toMatchSnapshot('admin-mobile-layout.json')
 })
 
 test('route guard blocks missing management permission', async ({ page }) => {

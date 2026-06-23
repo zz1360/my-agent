@@ -329,6 +329,7 @@ class LogisticsAgentApplicationTests {
         String localProfile = Files.readString(Path.of("src/main/resources/application-local.yml"));
         String devProfile = Files.readString(Path.of("src/main/resources/application-dev.yml"));
         String prodProfile = Files.readString(Path.of("src/main/resources/application-prod.yml"));
+        String oidcProfile = Files.readString(Path.of("src/main/resources/application-oidc.yml"));
         String envExample = Files.readString(Path.of(".env.example"));
         String ciWorkflow = Files.readString(Path.of(".github/workflows/ci.yml"));
         String opsDoc = Files.readString(Path.of("docs/v21-enterprise-ops-profile-ci.md"));
@@ -349,8 +350,12 @@ class LogisticsAgentApplicationTests {
         assertThat(prodProfile)
                 .contains("on-profile: prod")
                 .contains("fail-fast: true")
-                .contains("${AGENT_API_KEY}")
+                .contains("${AGENT_API_KEY:}")
                 .contains("${PGVECTOR_PASSWORD}");
+        assertThat(oidcProfile)
+                .contains("on-profile: oidc")
+                .contains("mode: oidc-bff")
+                .contains("${AGENT_OIDC_CLIENT_SECRET}");
         assertThat(envExample)
                 .contains("Do not put real secrets in Git")
                 .contains("replace-with-your-password")

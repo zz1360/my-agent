@@ -1,0 +1,31 @@
+spring:
+  config:
+    activate:
+      on-profile: oidc
+  security:
+    oauth2:
+      client:
+        provider:
+          corporate:
+            issuer-uri: ${AGENT_OIDC_ISSUER_URI}
+        registration:
+          corporate:
+            provider: corporate
+            client-id: ${AGENT_OIDC_CLIENT_ID}
+            client-secret: ${AGENT_OIDC_CLIENT_SECRET}
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope: openid,profile,email
+
+agent:
+  security:
+    mode: oidc-bff
+
+server:
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${AGENT_SESSION_COOKIE_SECURE:true}

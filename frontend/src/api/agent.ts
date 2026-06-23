@@ -22,7 +22,21 @@ import type {
   RetrievalStatus,
   SearchPreview,
   SecurityContext,
+  SecurityConfig,
+  PageResponse,
 } from '@/types/api'
+
+export async function fetchSecurityConfig(): Promise<SecurityConfig> {
+  return (await http.get<SecurityConfig>('/api/agent/security/config')).data
+}
+
+export async function fetchCsrfToken(url: string): Promise<void> {
+  await http.get(url)
+}
+
+export async function logoutSession(url: string): Promise<void> {
+  await http.post(url)
+}
 
 export async function fetchSecurityContext(): Promise<SecurityContext> {
   return (await http.get<SecurityContext>('/api/agent/security/context')).data
@@ -128,6 +142,12 @@ export async function fetchActions(params: URLSearchParams): Promise<AgentAction
   return (await http.get<AgentAction[]>(`/api/agent/actions?${params}`)).data
 }
 
+export async function fetchActionsPage(
+  params: URLSearchParams,
+): Promise<PageResponse<AgentAction>> {
+  return (await http.get<PageResponse<AgentAction>>(`/api/agent/actions/page?${params}`)).data
+}
+
 export async function fetchAction(actionId: string, params: URLSearchParams): Promise<AgentAction> {
   return (
     await http.get<AgentAction>(`/api/agent/actions/${encodeURIComponent(actionId)}?${params}`)
@@ -204,6 +224,10 @@ export async function fetchEvalRuns(params: URLSearchParams): Promise<EvalRun[]>
   return (await http.get<EvalRun[]>(`/api/agent/evals/runs?${params}`)).data
 }
 
+export async function fetchEvalRunsPage(params: URLSearchParams): Promise<PageResponse<EvalRun>> {
+  return (await http.get<PageResponse<EvalRun>>(`/api/agent/evals/runs/page?${params}`)).data
+}
+
 export async function runEvalSuite(suiteId: string, params: URLSearchParams): Promise<EvalRun> {
   return (
     await http.post<EvalRun>(`/api/agent/evals/suites/${encodeURIComponent(suiteId)}/run?${params}`)
@@ -212,6 +236,14 @@ export async function runEvalSuite(suiteId: string, params: URLSearchParams): Pr
 
 export async function fetchReleaseGates(params: URLSearchParams): Promise<EvalReleaseGate[]> {
   return (await http.get<EvalReleaseGate[]>(`/api/agent/evals/release-gates?${params}`)).data
+}
+
+export async function fetchReleaseGatesPage(
+  params: URLSearchParams,
+): Promise<PageResponse<EvalReleaseGate>> {
+  return (
+    await http.get<PageResponse<EvalReleaseGate>>(`/api/agent/evals/release-gates/page?${params}`)
+  ).data
 }
 
 export async function runReleaseGate(payload: Record<string, unknown>): Promise<EvalReleaseGate> {
@@ -230,6 +262,14 @@ export async function fetchKnowledgeDocuments(
   params: URLSearchParams,
 ): Promise<KnowledgeDocument[]> {
   return (await http.get<KnowledgeDocument[]>(`/api/knowledge/documents?${params}`)).data
+}
+
+export async function fetchKnowledgeDocumentsPage(
+  params: URLSearchParams,
+): Promise<PageResponse<KnowledgeDocument>> {
+  return (
+    await http.get<PageResponse<KnowledgeDocument>>(`/api/knowledge/documents/page?${params}`)
+  ).data
 }
 
 export async function saveKnowledgeDocument(
@@ -264,6 +304,13 @@ export async function fetchQualityAlerts(params: URLSearchParams): Promise<Quali
   return (await http.get<QualityAlert[]>(`/api/agent/quality/alerts?${params}`)).data
 }
 
+export async function fetchQualityAlertsPage(
+  params: URLSearchParams,
+): Promise<PageResponse<QualityAlert>> {
+  return (await http.get<PageResponse<QualityAlert>>(`/api/agent/quality/alerts/page?${params}`))
+    .data
+}
+
 export async function evaluateQualityAlerts(
   params: URLSearchParams,
 ): Promise<{ openAlerts: number }> {
@@ -284,6 +331,14 @@ export async function createQualityTask(
 
 export async function fetchQualityTasks(params: URLSearchParams): Promise<QualityTask[]> {
   return (await http.get<QualityTask[]>(`/api/agent/quality/alert-tasks?${params}`)).data
+}
+
+export async function fetchQualityTasksPage(
+  params: URLSearchParams,
+): Promise<PageResponse<QualityTask>> {
+  return (
+    await http.get<PageResponse<QualityTask>>(`/api/agent/quality/alert-tasks/page?${params}`)
+  ).data
 }
 
 export async function transitionQualityTask(

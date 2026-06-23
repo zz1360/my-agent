@@ -18,6 +18,7 @@ import com.superagent.logistics.api.dto.EvalRunComparisonResponse;
 import com.superagent.logistics.api.dto.EvalRunComparisonResponse.EvalCaseComparison;
 import com.superagent.logistics.api.dto.EvalSuiteResponse;
 import com.superagent.logistics.api.dto.ToolCallSummary;
+import com.superagent.logistics.api.dto.PageResponse;
 import com.superagent.logistics.knowledge.KnowledgeSearchOptions;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
@@ -216,16 +217,25 @@ public class AgentEvalService implements ApplicationRunner {
     }
 
     public List<EvalRunResponse> listRuns(String tenantId, int limit) {
+        return pageRuns(tenantId, 1, limit).items();
+    }
+
+    public PageResponse<EvalRunResponse> pageRuns(String tenantId, int page, int size) {
         String resolvedTenant = resolveTenant(tenantId);
-        return jdbcTemplate.query("""
+        int resolvedPage = PageResponse.normalizePage(page);
+        int resolvedSize = PageResponse.normalizeSize(size);
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_run WHERE tenant_id = ?",
+                Long.class, resolvedTenant);
+        List<EvalRunResponse> items = jdbcTemplate.query("""
                 SELECT * FROM ai_eval_run
                 WHERE tenant_id = ?
                 ORDER BY started_at DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """, (rs, rowNum) -> {
                     String runId = rs.getString("run_id");
                     return mapRun(rs, findResults(runId));
-                }, resolvedTenant, Math.max(1, Math.min(limit, 50)));
+                }, resolvedTenant, resolvedSize, (resolvedPage - 1) * resolvedSize);
+        return PageResponse.of(items, resolvedPage, resolvedSize, total == null ? 0 : total);
     }
 
     public EvalRunComparisonResponse compareRuns(String baselineRunId, String candidateRunId) {
@@ -338,20 +348,30 @@ public class AgentEvalService implements ApplicationRunner {
     }
 
     public List<EvalReleaseGateResponse> listReleaseGates(String tenantId, String suiteId, int limit) {
+        return pageReleaseGates(tenantId, suiteId, 1, limit).items();
+    }
+
+    public PageResponse<EvalReleaseGateResponse> pageReleaseGates(String tenantId, String suiteId,
+                                                                   int page, int size) {
         String resolvedTenant = resolveTenant(tenantId);
-        StringBuilder sql = new StringBuilder("""
-                SELECT * FROM ai_eval_release_gate
-                WHERE tenant_id = ?
-                """);
+        int resolvedPage = PageResponse.normalizePage(page);
+        int resolvedSize = PageResponse.normalizeSize(size);
+        StringBuilder where = new StringBuilder(" WHERE tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(resolvedTenant);
         if (suiteId != null && !suiteId.isBlank()) {
-            sql.append(" AND suite_id = ?");
+            where.append(" AND suite_id = ?");
             args.add(suiteId);
         }
-        sql.append(" ORDER BY created_at DESC LIMIT ?");
-        args.add(Math.max(1, Math.min(limit, 50)));
-        return jdbcTemplate.query(sql.toString(), this::mapReleaseGate, args.toArray());
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_eval_release_gate" + where,
+                Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(resolvedSize);
+        pageArgs.add((resolvedPage - 1) * resolvedSize);
+        List<EvalReleaseGateResponse> items = jdbcTemplate.query(
+                "SELECT * FROM ai_eval_release_gate" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                this::mapReleaseGate, pageArgs.toArray());
+        return PageResponse.of(items, resolvedPage, resolvedSize, total == null ? 0 : total);
     }
 
     private EvalSuiteResponse findSuite(String tenantId, String suiteId) {

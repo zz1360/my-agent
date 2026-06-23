@@ -6,6 +6,7 @@ import com.superagent.logistics.api.dto.AgentActionGenerateRequest;
 import com.superagent.logistics.api.dto.AgentActionResponse;
 import com.superagent.logistics.api.dto.AgentActionReviewRequest;
 import com.superagent.logistics.api.dto.AuditResponse;
+import com.superagent.logistics.api.dto.PageResponse;
 import com.superagent.logistics.audit.AgentAuditService;
 import com.superagent.logistics.business.CustomerProfile;
 import com.superagent.logistics.business.DiagnosisReport;
@@ -93,6 +94,11 @@ public class AgentActionService {
 
     public List<AgentActionResponse> list(String tenantId, String userId, List<String> roles,
                                           String customerId, String status, int limit) {
+        return page(tenantId, userId, roles, customerId, status, 1, limit).items();
+    }
+
+    public PageResponse<AgentActionResponse> page(String tenantId, String userId, List<String> roles,
+                                                   String customerId, String status, int page, int size) {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
         if (customerId == null || customerId.isBlank()) {
             permissionService.checkBusinessReadable(context);
@@ -100,23 +106,28 @@ public class AgentActionService {
             permissionService.checkCustomerReadable(context, customerId);
         }
 
-        StringBuilder sql = new StringBuilder("""
-                SELECT * FROM ai_agent_action_draft
-                WHERE tenant_id = ?
-                """);
+        int resolvedPage = PageResponse.normalizePage(page);
+        int resolvedSize = PageResponse.normalizeSize(size);
+        StringBuilder where = new StringBuilder(" WHERE tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(context.tenantId());
         if (customerId != null && !customerId.isBlank()) {
-            sql.append(" AND customer_id = ?");
+            where.append(" AND customer_id = ?");
             args.add(customerId);
         }
         if (status != null && !status.isBlank()) {
-            sql.append(" AND status = ?");
+            where.append(" AND status = ?");
             args.add(normalizeStatus(status));
         }
-        sql.append(" ORDER BY created_at DESC LIMIT ?");
-        args.add(Math.max(1, Math.min(limit, 100)));
-        return jdbcTemplate.query(sql.toString(), this::mapAction, args.toArray());
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_agent_action_draft" + where,
+                Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(resolvedSize);
+        pageArgs.add((resolvedPage - 1) * resolvedSize);
+        List<AgentActionResponse> items = jdbcTemplate.query(
+                "SELECT * FROM ai_agent_action_draft" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                this::mapAction, pageArgs.toArray());
+        return PageResponse.of(items, resolvedPage, resolvedSize, total == null ? 0 : total);
     }
 
     public AgentActionResponse get(String tenantId, String userId, List<String> roles, String actionId) {

@@ -8,8 +8,10 @@ import com.superagent.logistics.api.dto.KnowledgePreviewResponse;
 import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
 import com.superagent.logistics.api.dto.KnowledgeSearchPreviewResponse;
 import com.superagent.logistics.api.dto.RetrievalStatusResponse;
+import com.superagent.logistics.api.dto.PageResponse;
 import com.superagent.logistics.knowledge.KnowledgeAdminService;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -31,11 +33,13 @@ public class KnowledgeAdminController {
     }
 
     @PostMapping("/documents")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('KNOWLEDGE_MANAGE')")
     public KnowledgeDocumentResponse upsert(@Valid @RequestBody KnowledgeDocumentRequest request) {
         return knowledgeAdminService.upsert(request);
     }
 
     @PostMapping("/documents/preview")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('KNOWLEDGE_MANAGE')")
     public KnowledgePreviewResponse preview(@Valid @RequestBody KnowledgeDocumentRequest request) {
         return knowledgeAdminService.preview(request);
     }
@@ -51,6 +55,18 @@ public class KnowledgeAdminController {
         return knowledgeAdminService.list(tenantId, userId, roles, status, bizDomain, baseDocId, limit);
     }
 
+    @GetMapping("/documents/page")
+    public PageResponse<KnowledgeDocumentResponse> page(@RequestParam(required = false) String tenantId,
+                                                         @RequestParam(required = false) String userId,
+                                                         @RequestParam(required = false) List<String> roles,
+                                                         @RequestParam(required = false) String status,
+                                                         @RequestParam(required = false) String bizDomain,
+                                                         @RequestParam(required = false) String baseDocId,
+                                                         @RequestParam(defaultValue = "1") int page,
+                                                         @RequestParam(defaultValue = "20") int size) {
+        return knowledgeAdminService.page(tenantId, userId, roles, status, bizDomain, baseDocId, page, size);
+    }
+
     @GetMapping("/documents/{docId}")
     public KnowledgeDocumentResponse get(@PathVariable String docId,
                                          @RequestParam(required = false) String tenantId,
@@ -60,6 +76,7 @@ public class KnowledgeAdminController {
     }
 
     @PostMapping("/documents/{docId}/disable")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('KNOWLEDGE_MANAGE')")
     public KnowledgeDocumentResponse disable(@PathVariable String docId,
                                              @RequestParam(required = false) String tenantId,
                                              @RequestParam(required = false) String userId,
@@ -68,6 +85,7 @@ public class KnowledgeAdminController {
     }
 
     @PostMapping("/documents/{docId}/publish")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('KNOWLEDGE_MANAGE')")
     public KnowledgeDocumentResponse publish(@PathVariable String docId,
                                              @RequestParam(required = false) String tenantId,
                                              @RequestParam(required = false) String userId,
@@ -76,6 +94,7 @@ public class KnowledgeAdminController {
     }
 
     @PostMapping("/documents/{docId}/expire")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('KNOWLEDGE_MANAGE')")
     public KnowledgeDocumentResponse expire(@PathVariable String docId,
                                             @RequestParam(required = false) String tenantId,
                                             @RequestParam(required = false) String userId,
@@ -84,6 +103,7 @@ public class KnowledgeAdminController {
     }
 
     @PostMapping("/reindex")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('KNOWLEDGE_MANAGE')")
     public KnowledgeReindexResponse reindex(@RequestParam(required = false) String tenantId,
                                             @RequestParam(required = false) String userId,
                                             @RequestParam(required = false) List<String> roles) {

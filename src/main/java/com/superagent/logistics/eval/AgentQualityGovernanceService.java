@@ -12,6 +12,7 @@ import com.superagent.logistics.api.dto.QualityAlertTaskDetailResponse;
 import com.superagent.logistics.api.dto.QualityAlertTaskResponse;
 import com.superagent.logistics.api.dto.QualityAlertTaskUpdateRequest;
 import com.superagent.logistics.api.dto.QualityTrendResponse;
+import com.superagent.logistics.api.dto.PageResponse;
 import com.superagent.logistics.api.dto.QualityTrendResponse.DailyQualityPoint;
 import com.superagent.logistics.api.dto.QualityTrendResponse.MetricCount;
 import com.superagent.logistics.security.AccessDeniedException;
@@ -208,23 +209,32 @@ public class AgentQualityGovernanceService {
 
     public List<QualityAlertResponse> listAlerts(String tenantId, String userId, List<String> roles,
                                                  String status, int limit) {
+        return pageAlerts(tenantId, userId, roles, status, 1, limit).items();
+    }
+
+    public PageResponse<QualityAlertResponse> pageAlerts(String tenantId, String userId, List<String> roles,
+                                                          String status, int page, int size) {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
         permissionService.checkBusinessReadable(context);
         checkQualityMaintainer(context);
-        StringBuilder sql = new StringBuilder("""
-                SELECT *
-                FROM ai_quality_alert
-                WHERE tenant_id = ?
-                """);
+        int resolvedPage = PageResponse.normalizePage(page);
+        int resolvedSize = PageResponse.normalizeSize(size);
+        StringBuilder where = new StringBuilder(" WHERE tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(context.tenantId());
         if (status != null && !status.isBlank()) {
-            sql.append(" AND status = ?");
+            where.append(" AND status = ?");
             args.add(status.trim().toUpperCase(Locale.ROOT));
         }
-        sql.append(" ORDER BY last_triggered_at DESC LIMIT ?");
-        args.add(Math.max(1, Math.min(limit, 100)));
-        return jdbcTemplate.query(sql.toString(), this::mapAlert, args.toArray());
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_quality_alert" + where,
+                Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(resolvedSize);
+        pageArgs.add((resolvedPage - 1) * resolvedSize);
+        List<QualityAlertResponse> items = jdbcTemplate.query(
+                "SELECT * FROM ai_quality_alert" + where + " ORDER BY last_triggered_at DESC LIMIT ? OFFSET ?",
+                this::mapAlert, pageArgs.toArray());
+        return PageResponse.of(items, resolvedPage, resolvedSize, total == null ? 0 : total);
     }
 
     public QualityAlertEvaluationResponse evaluateAlerts(String tenantId, String userId, List<String> roles) {
@@ -327,23 +337,34 @@ public class AgentQualityGovernanceService {
 
     public List<QualityAlertTaskDetailResponse> listAlertTasks(String tenantId, String userId, List<String> roles,
                                                                String status, int limit) {
+        return pageAlertTasks(tenantId, userId, roles, status, 1, limit).items();
+    }
+
+    public PageResponse<QualityAlertTaskDetailResponse> pageAlertTasks(String tenantId, String userId,
+                                                                        List<String> roles, String status,
+                                                                        int page, int size) {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
         permissionService.checkBusinessReadable(context);
         checkQualityMaintainer(context);
-        StringBuilder sql = new StringBuilder("""
-                SELECT *
-                FROM logistics_ops_task
-                WHERE tenant_id = ? AND action_id LIKE 'quality-alert-%'
-                """);
+        int resolvedPage = PageResponse.normalizePage(page);
+        int resolvedSize = PageResponse.normalizeSize(size);
+        StringBuilder where = new StringBuilder(" WHERE tenant_id = ? AND action_id LIKE 'quality-alert-%'");
         List<Object> args = new ArrayList<>();
         args.add(context.tenantId());
         if (status != null && !status.isBlank()) {
-            sql.append(" AND status = ?");
+            where.append(" AND status = ?");
             args.add(normalizeTaskStatus(status));
         }
-        sql.append(" ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?");
-        args.add(Math.max(1, Math.min(limit, 100)));
-        return jdbcTemplate.query(sql.toString(), this::mapAlertTask, args.toArray());
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM logistics_ops_task" + where,
+                Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(resolvedSize);
+        pageArgs.add((resolvedPage - 1) * resolvedSize);
+        List<QualityAlertTaskDetailResponse> items = jdbcTemplate.query(
+                "SELECT * FROM logistics_ops_task" + where
+                        + " ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ? OFFSET ?",
+                this::mapAlertTask, pageArgs.toArray());
+        return PageResponse.of(items, resolvedPage, resolvedSize, total == null ? 0 : total);
     }
 
     public QualityAlertTaskDetailResponse transitionAlertTask(String taskId, QualityAlertTaskUpdateRequest request) {

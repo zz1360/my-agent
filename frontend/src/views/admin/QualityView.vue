@@ -1,30 +1,85 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { useQuery } from '@tanstack/vue-query'
 import { ClipboardPlus, Play, RefreshCw } from '@lucide/vue'
 import {
   createQualityTask,
   evaluateQualityAlerts,
-  fetchQualityAlerts,
+  fetchQualityAlertsPage,
   fetchQualityMetrics,
-  fetchQualityTasks,
+  fetchQualityTasksPage,
   transitionQualityTask,
 } from '@/api/agent'
 import { errorMessage } from '@/api/http'
 import { contextParams, contextPayload } from '@/utils/context'
 import { formatTime, percent } from '@/utils/format'
 import type { QualityAlert, QualityMetrics, QualityTask } from '@/types/api'
+import ServerPagination from '@/components/ServerPagination.vue'
+import StatusTag from '@/components/StatusTag.vue'
+import { useConfirmAction } from '@/composables/useConfirmAction'
 
-const metrics = ref<QualityMetrics | null>(null)
-const alerts = ref<QualityAlert[]>([])
-const tasks = ref<QualityTask[]>([])
-const loading = ref(false)
+const operationLoading = ref(false)
 const activeTab = ref('alerts')
 const alertStatus = ref('OPEN')
 const taskStatus = ref('')
+const appliedAlertStatus = ref('OPEN')
+const appliedTaskStatus = ref('')
+const alertPage = ref(1)
+const taskPage = ref(1)
+const pageSize = ref(20)
 const taskDialog = ref(false)
 const selectedTask = ref<QualityTask | null>(null)
 const taskForm = reactive({ status: 'PROCESSING', ownerUserId: '', comment: '' })
+const { confirm } = useConfirmAction()
+
+const metricsQuery = useQuery({
+  queryKey: ['quality-metrics'],
+  queryFn: () => fetchQualityMetrics(contextParams()),
+})
+const alertsQuery = useQuery({
+  queryKey: computed(() => [
+    'quality-alerts',
+    appliedAlertStatus.value,
+    alertPage.value,
+    pageSize.value,
+  ]),
+  queryFn: () => {
+    const params = contextParams({ page: String(alertPage.value), size: String(pageSize.value) })
+    if (appliedAlertStatus.value) params.set('status', appliedAlertStatus.value)
+    return fetchQualityAlertsPage(params)
+  },
+})
+const tasksQuery = useQuery({
+  queryKey: computed(() => [
+    'quality-tasks',
+    appliedTaskStatus.value,
+    taskPage.value,
+    pageSize.value,
+  ]),
+  queryFn: () => {
+    const params = contextParams({ page: String(taskPage.value), size: String(pageSize.value) })
+    if (appliedTaskStatus.value) params.set('status', appliedTaskStatus.value)
+    return fetchQualityTasksPage(params)
+  },
+})
+const metrics = computed<QualityMetrics | null>(() => metricsQuery.data.value || null)
+const alerts = computed<QualityAlert[]>(() => alertsQuery.data.value?.items || [])
+const tasks = computed<QualityTask[]>(() => tasksQuery.data.value?.items || [])
+const alertTotal = computed(() => alertsQuery.data.value?.total || 0)
+const taskTotal = computed(() => tasksQuery.data.value?.total || 0)
+const loading = computed(
+  () =>
+    operationLoading.value ||
+    metricsQuery.isFetching.value ||
+    alertsQuery.isFetching.value ||
+    tasksQuery.isFetching.value,
+)
+
+watch(
+  () => [metricsQuery.error.value, alertsQuery.error.value, tasksQuery.error.value],
+  (errors) => errors.find(Boolean) && ElMessage.error(errorMessage(errors.find(Boolean))),
+)
 
 const cards = computed(() => [
   ['负反馈', metrics.value?.notHelpfulFeedback || 0, '条'],
@@ -34,54 +89,42 @@ const cards = computed(() => [
   ['RAG 实验通过率', percent(metrics.value?.ragExperimentPassRate), ''],
 ])
 
-onMounted(load)
-
 async function load() {
-  loading.value = true
-  try {
-    const metricsParams = contextParams()
-    const alertParams = contextParams({ limit: '100' })
-    const taskParams = contextParams({ limit: '100' })
-    if (alertStatus.value) alertParams.set('status', alertStatus.value)
-    if (taskStatus.value) taskParams.set('status', taskStatus.value)
-    ;[metrics.value, alerts.value, tasks.value] = await Promise.all([
-      fetchQualityMetrics(metricsParams),
-      fetchQualityAlerts(alertParams),
-      fetchQualityTasks(taskParams),
-    ])
-  } catch (error) {
-    ElMessage.error(errorMessage(error))
-  } finally {
-    loading.value = false
-  }
+  appliedAlertStatus.value = alertStatus.value
+  appliedTaskStatus.value = taskStatus.value
+  alertPage.value = 1
+  taskPage.value = 1
+  await Promise.all([metricsQuery.refetch(), alertsQuery.refetch(), tasksQuery.refetch()])
+}
+
+function changeAlertPage(page: number, size: number) {
+  alertPage.value = page
+  pageSize.value = size
+}
+
+function changeTaskPage(page: number, size: number) {
+  taskPage.value = page
+  pageSize.value = size
 }
 
 async function evaluate() {
   try {
-    await ElMessageBox.confirm('将按当前规则重新计算质量告警。', '运行告警评估', {
-      confirmButtonText: '开始评估',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    loading.value = true
+    await confirm('将按当前规则重新计算质量告警。', '运行告警评估')
+    operationLoading.value = true
     const result = await evaluateQualityAlerts(contextParams())
     ElMessage.success(`评估完成，当前开放告警 ${result.openAlerts} 条`)
     await load()
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
 }
 
 async function createTask(alert: QualityAlert) {
   try {
-    await ElMessageBox.confirm(`从告警“${alert.summary}”创建治理任务？`, '创建治理任务', {
-      confirmButtonText: '创建任务',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    loading.value = true
+    await confirm(`从告警“${alert.summary}”创建治理任务？`, '创建治理任务')
+    operationLoading.value = true
     const result = await createQualityTask(alert.alertId, contextParams())
     ElMessage.success(`任务已创建：${result.taskId}`)
     activeTab.value = 'tasks'
@@ -89,7 +132,7 @@ async function createTask(alert: QualityAlert) {
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
 }
 
@@ -106,7 +149,7 @@ async function transitionTask() {
     ElMessage.warning('处理意见不能为空')
     return
   }
-  loading.value = true
+  operationLoading.value = true
   try {
     await transitionQualityTask(
       selectedTask.value.taskId,
@@ -122,7 +165,7 @@ async function transitionTask() {
   } catch (error) {
     ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
 }
 
@@ -130,12 +173,6 @@ function severityType(value: string) {
   if (value === 'CRITICAL' || value === 'HIGH') return 'danger'
   if (value === 'MEDIUM') return 'warning'
   return 'info'
-}
-
-function statusType(value: string) {
-  if (value === 'RESOLVED') return 'success'
-  if (value === 'REJECTED') return 'danger'
-  return 'warning'
 }
 </script>
 
@@ -159,7 +196,7 @@ function statusType(value: string) {
 
     <section class="governance-panel">
       <el-tabs v-model="activeTab">
-        <el-tab-pane :label="`质量告警 ${alerts.length}`" name="alerts">
+        <el-tab-pane :label="`质量告警 ${alertTotal}`" name="alerts">
           <div class="filter-row">
             <el-select v-model="alertStatus" placeholder="全部状态" clearable @change="load"
               ><el-option label="开放" value="OPEN" /><el-option label="已解决" value="RESOLVED"
@@ -181,12 +218,8 @@ function statusType(value: string) {
               ></el-table-column
             >
             <el-table-column label="状态" width="100"
-              ><template #default="scope"
-                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
-                  scope.row.status
-                }}</el-tag></template
-              ></el-table-column
-            >
+              ><template #default="scope"><StatusTag :value="scope.row.status" /></template
+            ></el-table-column>
             <el-table-column label="最近触发" min-width="170"
               ><template #default="scope">{{
                 formatTime(scope.row.lastTriggeredAt)
@@ -205,9 +238,15 @@ function statusType(value: string) {
               ></el-table-column
             >
           </el-table>
+          <ServerPagination
+            :page="alertPage"
+            :size="pageSize"
+            :total="alertTotal"
+            @change="changeAlertPage"
+          />
         </el-tab-pane>
 
-        <el-tab-pane :label="`治理任务 ${tasks.length}`" name="tasks">
+        <el-tab-pane :label="`治理任务 ${taskTotal}`" name="tasks">
           <div class="filter-row">
             <el-select v-model="taskStatus" placeholder="全部状态" clearable @change="load"
               ><el-option label="待处理" value="OPEN" /><el-option
@@ -223,12 +262,8 @@ function statusType(value: string) {
             <el-table-column prop="ownerRole" label="负责角色" width="130" />
             <el-table-column prop="ownerUserId" label="负责人" width="130" />
             <el-table-column label="状态" width="110"
-              ><template #default="scope"
-                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
-                  scope.row.status
-                }}</el-tag></template
-              ></el-table-column
-            >
+              ><template #default="scope"><StatusTag :value="scope.row.status" /></template
+            ></el-table-column>
             <el-table-column label="更新时间" min-width="170"
               ><template #default="scope">{{
                 formatTime(scope.row.updatedAt)
@@ -242,6 +277,12 @@ function statusType(value: string) {
               ></el-table-column
             >
           </el-table>
+          <ServerPagination
+            :page="taskPage"
+            :size="pageSize"
+            :total="taskTotal"
+            @change="changeTaskPage"
+          />
         </el-tab-pane>
       </el-tabs>
     </section>

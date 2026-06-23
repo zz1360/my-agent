@@ -51,11 +51,18 @@ agent:
     fail-fast: ${AGENT_DEPLOYMENT_FAIL_FAST:false}
   security:
     enabled: true
+    mode: ${AGENT_AUTH_MODE:api-key}
     api-key: ${AGENT_API_KEY:}
     api-key-header: X-Agent-Api-Key
     tenant-header: X-Agent-Tenant
     user-header: X-Agent-User
     roles-header: X-Agent-Roles
+    oidc-registration-id: ${AGENT_OIDC_REGISTRATION_ID:corporate}
+    oidc-tenant-claim: ${AGENT_OIDC_TENANT_CLAIM:tenant_id}
+    oidc-user-claim: ${AGENT_OIDC_USER_CLAIM:preferred_username}
+    oidc-roles-claim: ${AGENT_OIDC_ROLES_CLAIM:roles}
+    oidc-default-tenant: ${AGENT_OIDC_DEFAULT_TENANT:T001}
+    post-login-redirect: ${AGENT_POST_LOGIN_REDIRECT:/}
     protected-path-prefixes:
       - /api/
     public-path-prefixes:

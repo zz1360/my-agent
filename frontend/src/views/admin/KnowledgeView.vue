@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { useQuery } from '@tanstack/vue-query'
 import { FilePlus2, Pencil, RefreshCw, Search, UploadCloud } from '@lucide/vue'
 import {
   changeKnowledgeDocumentStatus,
-  fetchKnowledgeDocuments,
+  fetchKnowledgeDocumentsPage,
   fetchKnowledgeIndexJobs,
   fetchRetrievalStatus,
   fetchSearchPreview,
@@ -20,20 +21,62 @@ import type {
   RetrievalStatus,
   SearchPreview,
 } from '@/types/api'
+import ServerPagination from '@/components/ServerPagination.vue'
+import StatusTag from '@/components/StatusTag.vue'
+import { useConfirmAction } from '@/composables/useConfirmAction'
 
-const retrieval = ref<RetrievalStatus | null>(null)
-const documents = ref<KnowledgeDocument[]>([])
-const jobs = ref<KnowledgeIndexJob[]>([])
 const preview = ref<SearchPreview | null>(null)
 const activeTab = ref('documents')
 const docStatus = ref('')
 const bizDomain = ref('')
+const appliedDocStatus = ref('')
+const appliedBizDomain = ref('')
+const page = ref(1)
+const pageSize = ref(20)
 const query = ref('冷链运输超温后应该怎么处理？')
 const mode = ref('hybrid_reranker')
 const topK = ref(5)
-const loading = ref(false)
+const operationLoading = ref(false)
 const saving = ref(false)
 const drawerOpen = ref(false)
+const { confirm } = useConfirmAction()
+
+const retrievalQuery = useQuery({ queryKey: ['retrieval-status'], queryFn: fetchRetrievalStatus })
+const jobsQuery = useQuery({
+  queryKey: ['knowledge-index-jobs'],
+  queryFn: () => fetchKnowledgeIndexJobs(contextParams({ limit: '30' })),
+})
+const documentsQuery = useQuery({
+  queryKey: computed(() => [
+    'knowledge-documents',
+    appliedDocStatus.value,
+    appliedBizDomain.value,
+    page.value,
+    pageSize.value,
+  ]),
+  queryFn: () => {
+    const params = contextParams({ page: String(page.value), size: String(pageSize.value) })
+    if (appliedDocStatus.value) params.set('status', appliedDocStatus.value)
+    if (appliedBizDomain.value) params.set('bizDomain', appliedBizDomain.value)
+    return fetchKnowledgeDocumentsPage(params)
+  },
+})
+const retrieval = computed<RetrievalStatus | null>(() => retrievalQuery.data.value || null)
+const documents = computed<KnowledgeDocument[]>(() => documentsQuery.data.value?.items || [])
+const total = computed(() => documentsQuery.data.value?.total || 0)
+const jobs = computed<KnowledgeIndexJob[]>(() => jobsQuery.data.value || [])
+const loading = computed(
+  () =>
+    operationLoading.value ||
+    retrievalQuery.isFetching.value ||
+    jobsQuery.isFetching.value ||
+    documentsQuery.isFetching.value,
+)
+
+watch(
+  () => [retrievalQuery.error.value, jobsQuery.error.value, documentsQuery.error.value],
+  (errors) => errors.find(Boolean) && ElMessage.error(errorMessage(errors.find(Boolean))),
+)
 
 const emptyForm = () => ({
   baseDocId: '',
@@ -52,24 +95,16 @@ const emptyForm = () => ({
 })
 const form = reactive(emptyForm())
 
-onMounted(loadAll)
-
 async function loadAll() {
-  loading.value = true
-  try {
-    const documentParams = contextParams({ limit: '100' })
-    if (docStatus.value) documentParams.set('status', docStatus.value)
-    if (bizDomain.value.trim()) documentParams.set('bizDomain', bizDomain.value.trim())
-    ;[retrieval.value, documents.value, jobs.value] = await Promise.all([
-      fetchRetrievalStatus(),
-      fetchKnowledgeDocuments(documentParams),
-      fetchKnowledgeIndexJobs(contextParams({ limit: '30' })),
-    ])
-  } catch (error) {
-    ElMessage.error(errorMessage(error))
-  } finally {
-    loading.value = false
-  }
+  appliedDocStatus.value = docStatus.value
+  appliedBizDomain.value = bizDomain.value.trim()
+  page.value = 1
+  await Promise.all([retrievalQuery.refetch(), documentsQuery.refetch(), jobsQuery.refetch()])
+}
+
+function changePage(nextPage: number, nextSize: number) {
+  page.value = nextPage
+  pageSize.value = nextSize
 }
 
 function openCreate() {
@@ -103,11 +138,7 @@ async function save() {
   }
   try {
     if (form.status === 'ACTIVE') {
-      await ElMessageBox.confirm('保存后将立即替换生效内容并触发重新索引。', '更新生效文档', {
-        confirmButtonText: '确认更新',
-        cancelButtonText: '取消',
-        type: 'warning',
-      })
+      await confirm('保存后将立即替换生效内容并触发重新索引。', '更新生效文档')
     }
     saving.value = true
     await saveKnowledgeDocument(
@@ -130,34 +161,22 @@ async function save() {
 async function changeStatus(row: KnowledgeDocument, operation: 'publish' | 'disable' | 'expire') {
   const labels = { publish: '发布', disable: '停用', expire: '标记到期' }
   try {
-    await ElMessageBox.confirm(
-      `确认${labels[operation]}“${row.title}”？`,
-      `${labels[operation]}知识文档`,
-      {
-        confirmButtonText: labels[operation],
-        cancelButtonText: '取消',
-        type: operation === 'publish' ? 'warning' : 'error',
-      },
-    )
-    loading.value = true
+    await confirm(`确认${labels[operation]}“${row.title}”？`, `${labels[operation]}知识文档`)
+    operationLoading.value = true
     await changeKnowledgeDocumentStatus(row.docId, operation, contextParams())
     ElMessage.success(`文档已${labels[operation]}`)
     await loadAll()
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
 }
 
 async function reindex() {
   try {
-    await ElMessageBox.confirm('将为当前租户重建知识索引。', '重建知识索引', {
-      confirmButtonText: '开始重建',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    loading.value = true
+    await confirm('将为当前租户重建知识索引。', '重建知识索引')
+    operationLoading.value = true
     const result = await reindexKnowledge(contextParams())
     ElMessage.success(`索引任务已创建：${result.jobId}`)
     activeTab.value = 'jobs'
@@ -165,13 +184,13 @@ async function reindex() {
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
 }
 
 async function search() {
   if (!query.value.trim()) return
-  loading.value = true
+  operationLoading.value = true
   try {
     preview.value = await fetchSearchPreview(
       contextParams({ query: query.value.trim(), mode: mode.value, topK: String(topK.value) }),
@@ -179,14 +198,8 @@ async function search() {
   } catch (error) {
     ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
-}
-
-function statusType(value: string) {
-  if (['ACTIVE', 'SUCCESS'].includes(value)) return 'success'
-  if (['DISABLED', 'FAILED', 'EXPIRED'].includes(value)) return 'danger'
-  return 'warning'
 }
 </script>
 
@@ -231,11 +244,7 @@ function statusType(value: string) {
             <el-table-column prop="version" label="版本" width="90" />
             <el-table-column prop="chunkCount" label="分块" width="70" />
             <el-table-column label="状态" width="100">
-              <template #default="scope"
-                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
-                  scope.row.status
-                }}</el-tag></template
-              >
+              <template #default="scope"><StatusTag :value="scope.row.status" /></template>
             </el-table-column>
             <el-table-column label="更新时间" min-width="160">
               <template #default="scope">{{ formatTime(scope.row.updatedAt) }}</template>
@@ -269,6 +278,7 @@ function statusType(value: string) {
               </template>
             </el-table-column>
           </el-table>
+          <ServerPagination :page="page" :size="pageSize" :total="total" @change="changePage" />
         </el-tab-pane>
 
         <el-tab-pane label="检索预览" name="search">
@@ -308,12 +318,8 @@ function statusType(value: string) {
             <el-table-column prop="documentId" label="文档" min-width="170" />
             <el-table-column prop="chunkCount" label="分块" width="80" />
             <el-table-column label="状态" width="110"
-              ><template #default="scope"
-                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
-                  scope.row.status
-                }}</el-tag></template
-              ></el-table-column
-            >
+              ><template #default="scope"><StatusTag :value="scope.row.status" /></template
+            ></el-table-column>
             <el-table-column label="创建时间" min-width="170"
               ><template #default="scope">{{
                 formatTime(scope.row.createdAt)

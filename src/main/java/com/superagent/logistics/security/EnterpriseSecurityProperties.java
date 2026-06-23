@@ -13,6 +13,13 @@ public class EnterpriseSecurityProperties {
     private String tenantHeader = "X-Agent-Tenant";
     private String userHeader = "X-Agent-User";
     private String rolesHeader = "X-Agent-Roles";
+    private String mode = "api-key";
+    private String oidcRegistrationId = "corporate";
+    private String oidcTenantClaim = "tenant_id";
+    private String oidcUserClaim = "preferred_username";
+    private String oidcRolesClaim = "roles";
+    private String oidcDefaultTenant = "T001";
+    private String postLoginRedirect = "/";
     private List<String> protectedPathPrefixes = List.of("/api/");
     private List<String> publicPathPrefixes = List.of("/api/demo/");
 
@@ -60,6 +67,62 @@ public class EnterpriseSecurityProperties {
         return rolesHeader;
     }
 
+    public String getMode() {
+        return mode;
+    }
+
+    public void setMode(String mode) {
+        this.mode = mode;
+    }
+
+    public String getOidcRegistrationId() {
+        return oidcRegistrationId;
+    }
+
+    public void setOidcRegistrationId(String oidcRegistrationId) {
+        this.oidcRegistrationId = oidcRegistrationId;
+    }
+
+    public String getOidcTenantClaim() {
+        return oidcTenantClaim;
+    }
+
+    public void setOidcTenantClaim(String oidcTenantClaim) {
+        this.oidcTenantClaim = oidcTenantClaim;
+    }
+
+    public String getOidcUserClaim() {
+        return oidcUserClaim;
+    }
+
+    public void setOidcUserClaim(String oidcUserClaim) {
+        this.oidcUserClaim = oidcUserClaim;
+    }
+
+    public String getOidcRolesClaim() {
+        return oidcRolesClaim;
+    }
+
+    public void setOidcRolesClaim(String oidcRolesClaim) {
+        this.oidcRolesClaim = oidcRolesClaim;
+    }
+
+    public String getOidcDefaultTenant() {
+        return oidcDefaultTenant;
+    }
+
+    public void setOidcDefaultTenant(String oidcDefaultTenant) {
+        this.oidcDefaultTenant = oidcDefaultTenant;
+    }
+
+    public String getPostLoginRedirect() {
+        return postLoginRedirect;
+    }
+
+    public void setPostLoginRedirect(String postLoginRedirect) {
+        this.postLoginRedirect = postLoginRedirect;
+    }
+
     public void setRolesHeader(String rolesHeader) {
         this.rolesHeader = rolesHeader;
     }
@@ -81,6 +144,10 @@ public class EnterpriseSecurityProperties {
     }
 
     public boolean isApiKeyRequired() {
-        return enabled && apiKey != null && !apiKey.isBlank();
+        return enabled && !isOidcEnabled() && apiKey != null && !apiKey.isBlank();
+    }
+
+    public boolean isOidcEnabled() {
+        return enabled && "oidc-bff".equalsIgnoreCase(mode);
     }
 }

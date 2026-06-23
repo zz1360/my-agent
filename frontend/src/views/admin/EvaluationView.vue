@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { useQuery } from '@tanstack/vue-query'
 import { GitCompare, Play, RefreshCw, ShieldCheck } from '@lucide/vue'
 import {
   compareEvalRuns,
-  fetchEvalRuns,
+  fetchEvalRunsPage,
   fetchEvalSuites,
-  fetchReleaseGates,
+  fetchReleaseGatesPage,
   runEvalSuite,
   runReleaseGate,
 } from '@/api/agent'
@@ -14,14 +15,17 @@ import { errorMessage } from '@/api/http'
 import { useContextStore } from '@/stores/context'
 import { formatTime, percent } from '@/utils/format'
 import type { EvalReleaseGate, EvalRun, EvalRunComparison, EvalSuite } from '@/types/api'
+import ServerPagination from '@/components/ServerPagination.vue'
+import StatusTag from '@/components/StatusTag.vue'
+import { useConfirmAction } from '@/composables/useConfirmAction'
 
 const context = useContextStore()
-const suites = ref<EvalSuite[]>([])
-const runs = ref<EvalRun[]>([])
-const gates = ref<EvalReleaseGate[]>([])
 const comparison = ref<EvalRunComparison | null>(null)
-const loading = ref(false)
+const operationLoading = ref(false)
 const activeTab = ref('suites')
+const runPage = ref(1)
+const gatePage = ref(1)
+const pageSize = ref(20)
 const runDialog = ref(false)
 const dialogMode = ref<'run' | 'gate'>('run')
 const compareForm = reactive({ baselineRunId: '', candidateRunId: '' })
@@ -33,28 +37,69 @@ const runForm = reactive({
   minPassRate: 0.9,
   maxRegressions: 0,
 })
+const { confirm } = useConfirmAction()
 
-onMounted(load)
+const suitesQuery = useQuery({
+  queryKey: computed(() => ['eval-suites', context.tenantId]),
+  queryFn: () =>
+    fetchEvalSuites(new URLSearchParams({ tenantId: context.tenantId, enabledOnly: 'false' })),
+})
+const runsQuery = useQuery({
+  queryKey: computed(() => ['eval-runs', context.tenantId, runPage.value, pageSize.value]),
+  queryFn: () =>
+    fetchEvalRunsPage(
+      new URLSearchParams({
+        tenantId: context.tenantId,
+        page: String(runPage.value),
+        size: String(pageSize.value),
+      }),
+    ),
+})
+const gatesQuery = useQuery({
+  queryKey: computed(() => ['eval-gates', context.tenantId, gatePage.value, pageSize.value]),
+  queryFn: () =>
+    fetchReleaseGatesPage(
+      new URLSearchParams({
+        tenantId: context.tenantId,
+        page: String(gatePage.value),
+        size: String(pageSize.value),
+      }),
+    ),
+})
+const suites = computed<EvalSuite[]>(() => suitesQuery.data.value || [])
+const runs = computed<EvalRun[]>(() => runsQuery.data.value?.items || [])
+const gates = computed<EvalReleaseGate[]>(() => gatesQuery.data.value?.items || [])
+const runTotal = computed(() => runsQuery.data.value?.total || 0)
+const gateTotal = computed(() => gatesQuery.data.value?.total || 0)
+const loading = computed(
+  () =>
+    operationLoading.value ||
+    suitesQuery.isFetching.value ||
+    runsQuery.isFetching.value ||
+    gatesQuery.isFetching.value,
+)
+
+watch(
+  () => [suitesQuery.error.value, runsQuery.error.value, gatesQuery.error.value],
+  (errors) => errors.find(Boolean) && ElMessage.error(errorMessage(errors.find(Boolean))),
+)
+watch(runs, (value) => {
+  if (!compareForm.candidateRunId && value.length) compareForm.candidateRunId = value[0]!.runId
+  if (!compareForm.baselineRunId && value.length > 1) compareForm.baselineRunId = value[1]!.runId
+})
 
 async function load() {
-  loading.value = true
-  const params = new URLSearchParams({ tenantId: context.tenantId, limit: '30' })
-  const suiteParams = new URLSearchParams({ tenantId: context.tenantId, enabledOnly: 'false' })
-  try {
-    ;[suites.value, runs.value, gates.value] = await Promise.all([
-      fetchEvalSuites(suiteParams),
-      fetchEvalRuns(params),
-      fetchReleaseGates(params),
-    ])
-    if (!compareForm.candidateRunId && runs.value.length)
-      compareForm.candidateRunId = runs.value[0]!.runId
-    if (!compareForm.baselineRunId && runs.value.length > 1)
-      compareForm.baselineRunId = runs.value[1]!.runId
-  } catch (error) {
-    ElMessage.error(errorMessage(error))
-  } finally {
-    loading.value = false
-  }
+  await Promise.all([suitesQuery.refetch(), runsQuery.refetch(), gatesQuery.refetch()])
+}
+
+function changeRunPage(page: number, size: number) {
+  runPage.value = page
+  pageSize.value = size
+}
+
+function changeGatePage(page: number, size: number) {
+  gatePage.value = page
+  pageSize.value = size
 }
 
 function openRun(suite: EvalSuite, mode: 'run' | 'gate') {
@@ -64,7 +109,7 @@ function openRun(suite: EvalSuite, mode: 'run' | 'gate') {
 }
 
 async function submitRun() {
-  loading.value = true
+  operationLoading.value = true
   try {
     if (dialogMode.value === 'run') {
       const params = new URLSearchParams({
@@ -77,11 +122,7 @@ async function submitRun() {
       ElMessage.success(`评测运行完成：${result.passedCases}/${result.totalCases} 通过`)
       activeTab.value = 'runs'
     } else {
-      await ElMessageBox.confirm('发布门禁会运行候选评测并与最近基线比较。', '确认运行发布门禁', {
-        confirmButtonText: '运行门禁',
-        cancelButtonText: '取消',
-        type: 'warning',
-      })
+      await confirm('发布门禁会运行候选评测并与最近基线比较。', '确认运行发布门禁')
       const result = await runReleaseGate({
         tenantId: context.tenantId,
         suiteId: runForm.suiteId,
@@ -99,7 +140,7 @@ async function submitRun() {
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
 }
 
@@ -108,7 +149,7 @@ async function compare() {
     ElMessage.warning('请选择基线与候选运行')
     return
   }
-  loading.value = true
+  operationLoading.value = true
   try {
     comparison.value = await compareEvalRuns(
       new URLSearchParams({
@@ -119,14 +160,8 @@ async function compare() {
   } catch (error) {
     ElMessage.error(errorMessage(error))
   } finally {
-    loading.value = false
+    operationLoading.value = false
   }
-}
-
-function statusType(value: string) {
-  if (['PASSED', 'COMPLETED', 'SUCCESS'].includes(value)) return 'success'
-  if (['BLOCKED', 'FAILED'].includes(value)) return 'danger'
-  return 'warning'
 }
 </script>
 
@@ -166,7 +201,7 @@ function statusType(value: string) {
           </el-table>
         </el-tab-pane>
 
-        <el-tab-pane :label="`最近运行 ${runs.length}`" name="runs">
+        <el-tab-pane :label="`最近运行 ${runTotal}`" name="runs">
           <div class="compare-toolbar">
             <el-select v-model="compareForm.baselineRunId" placeholder="基线运行"
               ><el-option
@@ -208,21 +243,23 @@ function statusType(value: string) {
               ></el-table-column
             >
             <el-table-column label="状态" width="110"
-              ><template #default="scope"
-                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
-                  scope.row.status
-                }}</el-tag></template
-              ></el-table-column
-            >
+              ><template #default="scope"><StatusTag :value="scope.row.status" /></template
+            ></el-table-column>
             <el-table-column label="开始时间" min-width="170"
               ><template #default="scope">{{
                 formatTime(scope.row.startedAt)
               }}</template></el-table-column
             >
           </el-table>
+          <ServerPagination
+            :page="runPage"
+            :size="pageSize"
+            :total="runTotal"
+            @change="changeRunPage"
+          />
         </el-tab-pane>
 
-        <el-tab-pane :label="`发布门禁 ${gates.length}`" name="gates">
+        <el-tab-pane :label="`发布门禁 ${gateTotal}`" name="gates">
           <el-table :data="gates" stripe empty-text="暂无发布门禁记录">
             <el-table-column prop="gateId" label="门禁 ID" min-width="190" />
             <el-table-column prop="suiteId" label="评测集" min-width="190" />
@@ -233,12 +270,8 @@ function statusType(value: string) {
             >
             <el-table-column prop="regressedCases" label="退化" width="80" />
             <el-table-column label="状态" width="110"
-              ><template #default="scope"
-                ><el-tag :type="statusType(scope.row.status)" effect="plain">{{
-                  scope.row.status
-                }}</el-tag></template
-              ></el-table-column
-            >
+              ><template #default="scope"><StatusTag :value="scope.row.status" /></template
+            ></el-table-column>
             <el-table-column label="原因" min-width="260"
               ><template #default="scope">{{
                 scope.row.reasons?.join('；') || '-'
@@ -250,6 +283,12 @@ function statusType(value: string) {
               }}</template></el-table-column
             >
           </el-table>
+          <ServerPagination
+            :page="gatePage"
+            :size="pageSize"
+            :total="gateTotal"
+            @change="changeGatePage"
+          />
         </el-tab-pane>
       </el-tabs>
     </section>

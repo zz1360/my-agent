@@ -10,6 +10,7 @@ import com.superagent.logistics.api.dto.KnowledgeReindexResponse;
 import com.superagent.logistics.api.dto.KnowledgeSearchHitResponse;
 import com.superagent.logistics.api.dto.KnowledgeSearchPreviewResponse;
 import com.superagent.logistics.api.dto.RetrievalStatusResponse;
+import com.superagent.logistics.api.dto.PageResponse;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentPermissionService;
 import com.superagent.logistics.security.AgentUserContext;
@@ -113,9 +114,17 @@ public class KnowledgeAdminService {
 
     public List<KnowledgeDocumentResponse> list(String tenantId, String userId, List<String> roles,
                                                 String status, String bizDomain, String baseDocId, int limit) {
+        return page(tenantId, userId, roles, status, bizDomain, baseDocId, 1, limit).items();
+    }
+
+    public PageResponse<KnowledgeDocumentResponse> page(String tenantId, String userId, List<String> roles,
+                                                         String status, String bizDomain, String baseDocId,
+                                                         int page, int size) {
         AgentUserContext context = AgentUserContext.from(tenantId, userId, roles);
         permissionService.checkBusinessReadable(context);
-        StringBuilder sql = new StringBuilder("""
+        int resolvedPage = PageResponse.normalizePage(page);
+        int resolvedSize = PageResponse.normalizeSize(size);
+        String select = """
                 SELECT d.*,
                        (SELECT COUNT(*) FROM ai_knowledge_chunk c WHERE c.tenant_id = d.tenant_id AND c.doc_id = d.doc_id) AS chunk_count,
                        (SELECT j.job_id FROM ai_knowledge_index_job j
@@ -123,25 +132,31 @@ public class KnowledgeAdminService {
                            AND (j.document_id = d.doc_id OR j.base_doc_id = d.base_doc_id)
                          ORDER BY j.created_at DESC LIMIT 1) AS index_job_id
                 FROM ai_knowledge_document d
-                WHERE d.tenant_id = ?
-                """);
+                """;
+        StringBuilder where = new StringBuilder(" WHERE d.tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(context.tenantId());
         if (status != null && !status.isBlank()) {
-            sql.append(" AND d.status = ?");
+            where.append(" AND d.status = ?");
             args.add(status);
         }
         if (bizDomain != null && !bizDomain.isBlank()) {
-            sql.append(" AND d.biz_domain = ?");
+            where.append(" AND d.biz_domain = ?");
             args.add(bizDomain);
         }
         if (baseDocId != null && !baseDocId.isBlank()) {
-            sql.append(" AND d.base_doc_id = ?");
+            where.append(" AND d.base_doc_id = ?");
             args.add(baseDocId);
         }
-        sql.append(" ORDER BY d.updated_at DESC LIMIT ?");
-        args.add(Math.max(1, Math.min(limit, 100)));
-        return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> mapDocument(rs, List.of()), args.toArray());
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ai_knowledge_document d" + where,
+                Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(resolvedSize);
+        pageArgs.add((resolvedPage - 1) * resolvedSize);
+        List<KnowledgeDocumentResponse> items = jdbcTemplate.query(
+                select + where + " ORDER BY d.updated_at DESC LIMIT ? OFFSET ?",
+                (rs, rowNum) -> mapDocument(rs, List.of()), pageArgs.toArray());
+        return PageResponse.of(items, resolvedPage, resolvedSize, total == null ? 0 : total);
     }
 
     public KnowledgeDocumentResponse get(String tenantId, String docId, String userId, List<String> roles) {

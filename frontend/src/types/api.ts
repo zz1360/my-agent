@@ -92,6 +92,21 @@ export interface SecurityContext {
   authenticationType: string
 }
 
+export interface SecurityConfig {
+  mode: string
+  loginUrl: string
+  logoutUrl: string
+  csrfUrl: string
+}
+
+export interface PageResponse<T> {
+  items: T[]
+  page: number
+  size: number
+  total: number
+  totalPages: number
+}
+
 export interface OpsReadiness {
   application: string
   activeProfiles: string[]

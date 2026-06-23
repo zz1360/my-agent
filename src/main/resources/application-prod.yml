@@ -18,7 +18,8 @@ agent:
     environment: prod
     fail-fast: true
   security:
-    api-key: ${AGENT_API_KEY}
+    mode: ${AGENT_AUTH_MODE:api-key}
+    api-key: ${AGENT_API_KEY:}
   demo:
     reset-on-start: false
   deepseek:

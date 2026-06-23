@@ -11,7 +11,9 @@ import com.superagent.logistics.api.dto.AgentActionExecutionResponse;
 import com.superagent.logistics.api.dto.AgentActionGenerateRequest;
 import com.superagent.logistics.api.dto.AgentActionResponse;
 import com.superagent.logistics.api.dto.AgentActionReviewRequest;
+import com.superagent.logistics.api.dto.PageResponse;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -38,6 +40,7 @@ public class AgentActionController {
     }
 
     @PostMapping("/from-diagnosis")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('ACTION_MANAGE')")
     public List<AgentActionResponse> generateFromDiagnosis(@Valid @RequestBody AgentActionGenerateRequest request) {
         return actionService.generateFromDiagnosis(request);
     }
@@ -50,6 +53,17 @@ public class AgentActionController {
                                           @RequestParam(required = false) String status,
                                           @RequestParam(defaultValue = "20") int limit) {
         return actionService.list(tenantId, userId, roles, customerId, status, limit);
+    }
+
+    @GetMapping("/page")
+    public PageResponse<AgentActionResponse> page(@RequestParam(required = false) String tenantId,
+                                                   @RequestParam(required = false) String userId,
+                                                   @RequestParam(required = false) List<String> roles,
+                                                   @RequestParam(required = false) String customerId,
+                                                   @RequestParam(required = false) String status,
+                                                   @RequestParam(defaultValue = "1") int page,
+                                                   @RequestParam(defaultValue = "20") int size) {
+        return actionService.page(tenantId, userId, roles, customerId, status, page, size);
     }
 
     @GetMapping("/executions")
@@ -98,12 +112,14 @@ public class AgentActionController {
     }
 
     @PostMapping("/{actionId}/review")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('ACTION_MANAGE')")
     public AgentActionResponse review(@PathVariable String actionId,
                                       @Valid @RequestBody AgentActionReviewRequest request) {
         return actionService.review(actionId, request);
     }
 
     @PostMapping("/{actionId}/execute")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('ACTION_MANAGE')")
     public AgentActionExecutionResponse execute(@PathVariable String actionId,
                                                 @RequestBody AgentActionExecuteRequest request) {
         return executionService.execute(actionId, request);
@@ -126,12 +142,14 @@ public class AgentActionController {
     }
 
     @PostMapping("/executions/{executionId}/retry")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('ACTION_MANAGE')")
     public AgentActionExecutionResponse retryExecution(@PathVariable String executionId,
                                                        @RequestBody AgentActionExecuteRequest request) {
         return executionService.retry(executionId, request);
     }
 
     @PostMapping("/automation/run")
+    @PreAuthorize("@agentMethodSecurity.hasPermission('ACTION_MANAGE')")
     public AgentActionAutomationResponse runAutomation(@RequestBody AgentActionAutomationRequest request) {
         return executionService.runLowRiskAutomation(request);
     }
