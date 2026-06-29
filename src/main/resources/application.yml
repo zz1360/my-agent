@@ -79,6 +79,36 @@ agent:
     model: deepseek-v4-flash
     temperature: 0.2
     max-tokens: 1800
+  llm:
+    default-route: logistics-chat
+    routes:
+      logistics-chat:
+        primary-model: ${AGENT_LLM_CHAT_PRIMARY_MODEL:deepseek-v4-flash}
+        fallback-model: ${AGENT_LLM_CHAT_FALLBACK_MODEL:local-rule}
+        timeout-ms: ${AGENT_LLM_CHAT_TIMEOUT_MS:30000}
+        max-prompt-tokens: ${AGENT_LLM_CHAT_MAX_PROMPT_TOKENS:6000}
+        max-completion-tokens: ${AGENT_LLM_CHAT_MAX_COMPLETION_TOKENS:1800}
+        temperature: ${AGENT_LLM_CHAT_TEMPERATURE:0.2}
+      customer-diagnosis:
+        primary-model: ${AGENT_LLM_DIAGNOSIS_PRIMARY_MODEL:deepseek-v4-flash}
+        fallback-model: ${AGENT_LLM_DIAGNOSIS_FALLBACK_MODEL:local-rule}
+        timeout-ms: ${AGENT_LLM_DIAGNOSIS_TIMEOUT_MS:45000}
+        max-prompt-tokens: ${AGENT_LLM_DIAGNOSIS_MAX_PROMPT_TOKENS:8000}
+        max-completion-tokens: ${AGENT_LLM_DIAGNOSIS_MAX_COMPLETION_TOKENS:2400}
+        temperature: ${AGENT_LLM_DIAGNOSIS_TEMPERATURE:0.2}
+    models:
+      deepseek-v4-flash:
+        provider: deepseek
+        model: ${agent.deepseek.model}
+        enabled: ${AGENT_LLM_DEEPSEEK_ENABLED:true}
+        supports-streaming: true
+        supports-tool-calling: true
+      local-rule:
+        provider: local-rule
+        model: local-rule
+        enabled: true
+        supports-streaming: false
+        supports-tool-calling: false
   embedding:
     provider: ${LOCAL_EMBEDDING_PROVIDER:transformers}
     fallback-to-hashing: ${LOCAL_EMBEDDING_FALLBACK_TO_HASHING:false}

@@ -41,6 +41,7 @@ public class DeepSeekChatClientConfig {
                 .model(properties.getModel())
                 .temperature(properties.getTemperature())
                 .maxTokens(properties.getMaxTokens())
+                .streamUsage(true)
                 .internalToolExecutionEnabled(true)
                 .build();
 

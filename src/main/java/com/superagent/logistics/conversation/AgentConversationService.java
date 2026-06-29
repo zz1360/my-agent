@@ -13,6 +13,8 @@ import com.superagent.logistics.api.dto.AgentMessageFeedbackResponse;
 import com.superagent.logistics.api.dto.AgentMessageResponse;
 import com.superagent.logistics.api.dto.Citation;
 import com.superagent.logistics.api.dto.ToolCallSummary;
+import com.superagent.logistics.llm.LlmStreamListener;
+import com.superagent.logistics.llm.LlmUsage;
 import com.superagent.logistics.security.AgentUserContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -23,7 +25,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,26 +68,29 @@ public class AgentConversationService {
         AgentChatResponse response = ensureMessageId(rawResponse);
         Instant assistantMessageAt = response.createdAt() == null ? Instant.now() : response.createdAt();
 
-        upsertConversation(context, normalizedRequest, response, assistantMessageAt);
-        insertMessage(context.tenantId(), response.conversationId(), userMessageId, "USER",
-                normalizedRequest.message(), null, null, null, List.of(), List.of(), null, userMessageAt);
-        insertMessage(context.tenantId(), response.conversationId(), response.messageId(), "ASSISTANT",
-                response.answer(), response.traceId(), response.riskLevel(), response.confidence(),
-                response.citations(), response.toolCalls(), latencyMs, assistantMessageAt);
+        persistExchange(context, normalizedRequest, response, userMessageId, userMessageAt, latencyMs, assistantMessageAt);
         return response;
     }
 
     public SseEmitter chatStream(AgentChatRequest request) {
         SseEmitter emitter = new SseEmitter(60_000L);
+        long started = System.nanoTime();
+        AgentChatRequest normalizedRequest = normalizeRequest(request);
+        AgentUserContext context = AgentUserContext.from(
+                normalizedRequest.tenantId(),
+                normalizedRequest.userId(),
+                normalizedRequest.roles()
+        );
+        String userMessageId = newId("msg-user");
+        Instant userMessageAt = Instant.now();
         CompletableFuture.runAsync(() -> {
             try {
                 sendEvent(emitter, "status", Map.of("message", "已接收问题"));
-                sendEvent(emitter, "status", Map.of("message", "正在查询业务数据和知识库"));
-                AgentChatResponse response = chat(request);
-                sendEvent(emitter, "status", Map.of("message", "正在生成回答"));
-                for (String chunk : answerChunks(response.answer())) {
-                    sendEvent(emitter, "delta", Map.of("delta", chunk));
-                }
+                AgentChatResponse rawResponse = agentService.chatStream(normalizedRequest, new SseLlmStreamListener(emitter));
+                long latencyMs = (System.nanoTime() - started) / 1_000_000;
+                AgentChatResponse response = ensureMessageId(rawResponse);
+                Instant assistantMessageAt = response.createdAt() == null ? Instant.now() : response.createdAt();
+                persistExchange(context, normalizedRequest, response, userMessageId, userMessageAt, latencyMs, assistantMessageAt);
                 sendEvent(emitter, "complete", response);
                 emitter.complete();
             } catch (RuntimeException | IOException ex) {
@@ -99,6 +103,21 @@ public class AgentConversationService {
             }
         });
         return emitter;
+    }
+
+    private void persistExchange(AgentUserContext context,
+                                 AgentChatRequest request,
+                                 AgentChatResponse response,
+                                 String userMessageId,
+                                 Instant userMessageAt,
+                                 long latencyMs,
+                                 Instant assistantMessageAt) {
+        upsertConversation(context, request, response, assistantMessageAt);
+        insertMessage(context.tenantId(), response.conversationId(), userMessageId, "USER",
+                request.message(), null, null, null, List.of(), List.of(), null, userMessageAt);
+        insertMessage(context.tenantId(), response.conversationId(), response.messageId(), "ASSISTANT",
+                response.answer(), response.traceId(), response.riskLevel(), response.confidence(),
+                response.citations(), response.toolCalls(), latencyMs, assistantMessageAt);
     }
 
     public List<AgentConversationSummary> listConversations(String tenantId, String userId, List<String> roles, int limit) {
@@ -358,23 +377,40 @@ public class AgentConversationService {
         }
     }
 
-    private List<String> answerChunks(String answer) {
-        if (answer == null || answer.isBlank()) {
-            return List.of("");
-        }
-        List<String> chunks = new ArrayList<>();
-        int start = 0;
-        int chunkSize = 120;
-        while (start < answer.length()) {
-            int end = Math.min(answer.length(), start + chunkSize);
-            chunks.add(answer.substring(start, end));
-            start = end;
-        }
-        return chunks;
-    }
-
     private void sendEvent(SseEmitter emitter, String eventName, Object data) throws IOException {
         emitter.send(SseEmitter.event().name(eventName).data(data));
+    }
+
+    private class SseLlmStreamListener implements LlmStreamListener {
+
+        private final SseEmitter emitter;
+
+        private SseLlmStreamListener(SseEmitter emitter) {
+            this.emitter = emitter;
+        }
+
+        @Override
+        public void onStatus(String message) {
+            sendUnchecked("status", Map.of("message", message));
+        }
+
+        @Override
+        public void onDelta(String delta) {
+            sendUnchecked("delta", Map.of("delta", delta));
+        }
+
+        @Override
+        public void onUsage(LlmUsage usage) {
+            sendUnchecked("usage", usage);
+        }
+
+        private void sendUnchecked(String eventName, Object data) {
+            try {
+                sendEvent(emitter, eventName, data);
+            } catch (IOException ex) {
+                throw new IllegalStateException("SSE 发送失败", ex);
+            }
+        }
     }
 
     private String normalizeRating(String rating) {

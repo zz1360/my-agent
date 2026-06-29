@@ -18,15 +18,15 @@ import com.superagent.logistics.business.WaybillSummary;
 import com.superagent.logistics.knowledge.KnowledgeSearchDiagnostics;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
+import com.superagent.logistics.llm.LlmGateway;
+import com.superagent.logistics.llm.LlmRequest;
+import com.superagent.logistics.llm.LlmResponse;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentUserContext;
 import com.superagent.logistics.security.PromptInjectionGuard;
 import com.superagent.logistics.security.SensitiveDataMasker;
 import com.superagent.logistics.tools.LogisticsTools;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +44,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -61,8 +62,7 @@ public class CustomerDiagnosisAgentService {
     private final PromptInjectionGuard promptInjectionGuard;
     private final SensitiveDataMasker masker;
     private final AgentAuditService auditService;
-    private final ObjectProvider<ChatClient> deepSeekChatClient;
-    private final boolean deepSeekEnabled;
+    private final LlmGateway llmGateway;
     private final LocalDate seedDate;
 
     public CustomerDiagnosisAgentService(KnowledgeSearchService knowledgeSearchService,
@@ -70,16 +70,14 @@ public class CustomerDiagnosisAgentService {
                                          PromptInjectionGuard promptInjectionGuard,
                                          SensitiveDataMasker masker,
                                          AgentAuditService auditService,
-                                         @Qualifier("deepSeekChatClient") ObjectProvider<ChatClient> deepSeekChatClient,
-                                         @Value("${agent.deepseek.enabled:false}") boolean deepSeekEnabled,
+                                         LlmGateway llmGateway,
                                          @Value("${agent.demo.seed-date:2026-06-04}") String seedDate) {
         this.knowledgeSearchService = knowledgeSearchService;
         this.logisticsTools = logisticsTools;
         this.promptInjectionGuard = promptInjectionGuard;
         this.masker = masker;
         this.auditService = auditService;
-        this.deepSeekChatClient = deepSeekChatClient;
-        this.deepSeekEnabled = deepSeekEnabled;
+        this.llmGateway = llmGateway;
         this.seedDate = LocalDate.parse(seedDate);
     }
 
@@ -134,8 +132,9 @@ public class CustomerDiagnosisAgentService {
             String riskLevel = resolveRiskLevel(suspicious, diagnosis, slaAssessments, tickets);
             String deterministicNarrative = buildNarrative(window, customer, diagnosis, attributions, slaAssessments,
                     nextActions, knowledgeResults, suspicious);
-            ModelNarrative modelNarrative = maybeGenerateDeepSeekNarrative(message, deterministicNarrative, knowledgeResults,
-                    customer, diagnosis, attributions, slaAssessments, nextActions, toolCalls);
+            ModelNarrative modelNarrative = maybeGenerateModelNarrative(traceId, context, request.conversationId(),
+                    message, deterministicNarrative, knowledgeResults, customer, diagnosis, attributions,
+                    slaAssessments, nextActions, toolCalls, suspicious);
             String narrative = masker.maskText(modelNarrative.text());
             long latencyMs = (System.nanoTime() - started) / 1_000_000;
 
@@ -515,38 +514,56 @@ public class CustomerDiagnosisAgentService {
         return answer.toString();
     }
 
-    private ModelNarrative maybeGenerateDeepSeekNarrative(String message,
-                                                          String fallbackNarrative,
-                                                          List<KnowledgeSearchResult> knowledgeResults,
-                                                          CustomerProfile customer,
-                                                          DiagnosisReport diagnosis,
-                                                          List<RiskAttribution> attributions,
-                                                          List<SlaAssessment> slaAssessments,
-                                                          List<String> nextActions,
-                                                          List<ToolCallSummary> toolCalls) {
-        if (!deepSeekEnabled) {
+    private ModelNarrative maybeGenerateModelNarrative(String traceId,
+                                                       AgentUserContext context,
+                                                       String conversationId,
+                                                       String message,
+                                                       String fallbackNarrative,
+                                                       List<KnowledgeSearchResult> knowledgeResults,
+                                                       CustomerProfile customer,
+                                                       DiagnosisReport diagnosis,
+                                                       List<RiskAttribution> attributions,
+                                                       List<SlaAssessment> slaAssessments,
+                                                       List<String> nextActions,
+                                                       List<ToolCallSummary> toolCalls,
+                                                       boolean suspicious) {
+        if (suspicious) {
             return new ModelNarrative(fallbackNarrative, "local-structured-diagnosis");
         }
-        ChatClient chatClient = deepSeekChatClient.getIfAvailable();
-        if (chatClient == null) {
+        String prompt = buildDeepSeekPrompt(message, knowledgeResults, customer, diagnosis, attributions, slaAssessments, nextActions);
+        Optional<LlmResponse> response = llmGateway.chat(new LlmRequest(
+                traceId,
+                context.tenantId(),
+                context.userId(),
+                conversationId,
+                "customer-diagnosis",
+                "customer-diagnosis",
+                prompt,
+                new Object[0],
+                Map.of(
+                        "tenantId", context.tenantId(),
+                        "userId", context.userId(),
+                        "roles", context.roles()
+                )
+        ));
+        if (response.isEmpty()) {
             return new ModelNarrative(fallbackNarrative, "local-structured-diagnosis");
         }
-        long start = System.nanoTime();
-        try {
-            String answer = chatClient.prompt()
-                    .user(buildDeepSeekPrompt(message, knowledgeResults, customer, diagnosis, attributions, slaAssessments, nextActions))
-                    .call()
-                    .content();
-            long latencyMs = (System.nanoTime() - start) / 1_000_000;
-            toolCalls.add(new ToolCallSummary("deepSeekChatClient", "success",
-                    "DeepSeek 已基于结构化证据生成客户异常诊断叙述", latencyMs, null));
-            return new ModelNarrative(answer, "deepseek");
-        } catch (RuntimeException ex) {
-            long latencyMs = (System.nanoTime() - start) / 1_000_000;
-            toolCalls.add(new ToolCallSummary("deepSeekChatClient", "failed",
-                    "DeepSeek 诊断叙述生成失败，已回退本地结构化诊断：" + ex.getMessage(), latencyMs, "MODEL_ERROR"));
-            return new ModelNarrative(fallbackNarrative, "local-structured-diagnosis");
+        LlmResponse modelResponse = response.get();
+        toolCalls.add(new ToolCallSummary("llmGateway", "success",
+                "模型网关已生成客户异常诊断叙述；route=" + modelResponse.routeKey()
+                        + "，provider=" + modelResponse.provider() + "，model=" + modelResponse.model()
+                        + tokenSummary(modelResponse),
+                modelResponse.latencyMs(), null));
+        return new ModelNarrative(modelResponse.content(), modelResponse.provider() + "/" + modelResponse.model());
+    }
+
+    private String tokenSummary(LlmResponse response) {
+        if (response.usage() == null || response.usage().totalTokens() == null) {
+            return "";
         }
+        String estimated = response.usage().estimated() ? "，estimated=true" : "";
+        return "，tokens=" + response.usage().totalTokens() + estimated;
     }
 
     private String buildDeepSeekPrompt(String message,

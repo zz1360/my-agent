@@ -219,7 +219,76 @@ class LogisticsAgentApplicationTests {
                 WHERE TABLE_NAME = 'ai_agent_rag_audit'
                 """, Integer.class);
         assertThat(ragAuditTable).isEqualTo(1);
-        assertThat(migrations).isGreaterThanOrEqualTo(17);
+        Integer modelCallTable = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_NAME = 'ai_model_call_log'
+                """, Integer.class);
+        Integer modelPriceTable = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_NAME = 'ai_model_price'
+                """, Integer.class);
+        assertThat(modelCallTable).isEqualTo(1);
+        assertThat(modelPriceTable).isEqualTo(1);
+        assertThat(migrations).isGreaterThanOrEqualTo(18);
+    }
+
+    @Test
+    void modelCallLogsExposeTokenCostSummary() throws Exception {
+        jdbcTemplate.update("""
+                INSERT INTO ai_model_call_log
+                (trace_id, tenant_id, user_id, conversation_id, scene, route_key, provider, model, streaming,
+                 prompt_tokens, completion_tokens, total_tokens, usage_estimated, input_cost, output_cost, total_cost,
+                 currency, latency_ms, ttft_ms, status, error_code, error_message, fallback_from, fallback_reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                "trace-model-test",
+                "T001",
+                "u-model-test",
+                "conv-model-test",
+                "agent-chat",
+                "logistics-chat",
+                "deepseek",
+                "deepseek-v4-flash",
+                true,
+                120,
+                80,
+                200,
+                false,
+                "0.00000000",
+                "0.00000000",
+                "0.00000000",
+                "CNY",
+                1500,
+                320,
+                "SUCCESS",
+                null,
+                null,
+                null,
+                null);
+
+        String listBody = mockMvc.perform(get("/api/agent/model-calls")
+                        .param("tenantId", "T001")
+                        .param("traceId", "trace-model-test"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode list = objectMapper.readTree(listBody);
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).get("totalTokens").asInt()).isEqualTo(200);
+        assertThat(list.get(0).get("streaming").asBoolean()).isTrue();
+
+        String summaryBody = mockMvc.perform(get("/api/agent/model-calls/summary")
+                        .param("tenantId", "T001"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode summary = objectMapper.readTree(summaryBody);
+        assertThat(summary.get("tenantId").asText()).isEqualTo("T001");
+        assertThat(summary.get("totalCalls").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(summary.get("totalTokens").asLong()).isGreaterThanOrEqualTo(200);
+        assertThat(summary.get("currency").asText()).isEqualTo("CNY");
     }
 
     @Test

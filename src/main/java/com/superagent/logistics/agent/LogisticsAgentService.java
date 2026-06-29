@@ -15,15 +15,16 @@ import com.superagent.logistics.business.WaybillSummary;
 import com.superagent.logistics.knowledge.KnowledgeSearchResult;
 import com.superagent.logistics.knowledge.KnowledgeSearchDiagnostics;
 import com.superagent.logistics.knowledge.KnowledgeSearchService;
+import com.superagent.logistics.llm.LlmGateway;
+import com.superagent.logistics.llm.LlmRequest;
+import com.superagent.logistics.llm.LlmResponse;
+import com.superagent.logistics.llm.LlmStreamListener;
 import com.superagent.logistics.security.AccessDeniedException;
 import com.superagent.logistics.security.AgentUserContext;
 import com.superagent.logistics.security.PromptInjectionGuard;
 import com.superagent.logistics.security.SensitiveDataMasker;
 import com.superagent.logistics.tools.LogisticsTools;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -59,8 +61,7 @@ public class LogisticsAgentService {
     private final PromptInjectionGuard promptInjectionGuard;
     private final SensitiveDataMasker masker;
     private final AgentAuditService auditService;
-    private final ObjectProvider<ChatClient> deepSeekChatClient;
-    private final boolean deepSeekEnabled;
+    private final LlmGateway llmGateway;
     private final LocalDate seedDate;
 
     public LogisticsAgentService(KnowledgeSearchService knowledgeSearchService,
@@ -68,16 +69,14 @@ public class LogisticsAgentService {
                                  PromptInjectionGuard promptInjectionGuard,
                                  SensitiveDataMasker masker,
                                  AgentAuditService auditService,
-                                 @Qualifier("deepSeekChatClient") ObjectProvider<ChatClient> deepSeekChatClient,
-                                 @Value("${agent.deepseek.enabled:false}") boolean deepSeekEnabled,
+                                 LlmGateway llmGateway,
                                  @Value("${agent.demo.seed-date:2026-06-04}") String seedDate) {
         this.knowledgeSearchService = knowledgeSearchService;
         this.logisticsTools = logisticsTools;
         this.promptInjectionGuard = promptInjectionGuard;
         this.masker = masker;
         this.auditService = auditService;
-        this.deepSeekChatClient = deepSeekChatClient;
-        this.deepSeekEnabled = deepSeekEnabled;
+        this.llmGateway = llmGateway;
         this.seedDate = LocalDate.parse(seedDate);
     }
 
@@ -106,101 +105,168 @@ public class LogisticsAgentService {
                     ? knowledgeResults.stream().map(this::toCitation).toList()
                     : List.of();
 
-            if (deepSeekEnabled && !suspicious) {
-                AgentChatResponse deepSeekResponse = tryDeepSeekChat(request, context, message, searchDiagnostics,
+            if (!suspicious) {
+                Optional<AgentChatResponse> modelResponse = tryModelChat(request, context, message, searchDiagnostics,
                         citations, traceId, started, toolCalls, customerId, waybillId);
-                if (deepSeekResponse != null) {
-                    return deepSeekResponse;
+                if (modelResponse.isPresent()) {
+                    return modelResponse.get();
                 }
             }
 
-            CustomerProfile customer = null;
-            WaybillDetail waybillDetail = null;
-            List<WaybillSummary> waybills = List.of();
-            List<ExceptionEvent> exceptions = List.of();
-            List<TicketRecord> tickets = List.of();
-            List<SlaRule> slaRules = List.of();
-            DiagnosisReport diagnosis = null;
-            List<CustomerProfile> highRiskCustomers = List.of();
-
-            if (waybillId != null) {
-                waybillDetail = callTool("getWaybillDetail", "waybillId=" + waybillId,
-                        () -> logisticsTools.getWaybillDetail(waybillId, toolContext), toolCalls, this::summarizeWaybillDetail);
-                if (waybillDetail != null && waybillDetail.waybill() != null) {
-                    customerId = customerId == null ? waybillDetail.waybill().customerId() : customerId;
-                    customer = waybillDetail.customer();
-                }
-            }
-
-            if (customerId != null) {
-                String finalCustomerId = customerId;
-                boolean customerLevelQuestion = waybillId == null
-                        || containsAny(message, "客户", "最近", "为什么", "诊断", "摘要", "投诉量", "上升", "风险");
-                customer = customer == null
-                        ? callTool("getCustomerProfile", "customerId=" + finalCustomerId,
-                        () -> logisticsTools.getCustomerProfile(finalCustomerId, toolContext), toolCalls, this::summarizeCustomer)
-                        : customer;
-
-                if (customerLevelQuestion && shouldQueryWaybills(message, waybillId)) {
-                    String status = message.contains("异常") ? "EXCEPTION" : null;
-                    waybills = callTool("queryCustomerWaybills", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                            () -> logisticsTools.queryCustomerWaybills(finalCustomerId, range.from(), range.to(), status, 12, toolContext),
-                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条运单摘要");
-                }
-                if (customerLevelQuestion && shouldQueryExceptions(message)) {
-                    exceptions = callTool("queryCustomerExceptions", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                            () -> logisticsTools.queryCustomerExceptions(finalCustomerId, range.from(), range.to(), null, 20, toolContext),
-                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条异常事件");
-                }
-                if (customerLevelQuestion && shouldQueryTickets(message)) {
-                    tickets = callTool("queryCustomerTickets", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                            () -> logisticsTools.queryCustomerTickets(finalCustomerId, range.from(), range.to(), 20, toolContext),
-                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条工单/投诉");
-                }
-                if (customerLevelQuestion && shouldGenerateDiagnosis(message)) {
-                    diagnosis = callTool("generateCustomerDiagnosis", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
-                            () -> logisticsTools.generateCustomerDiagnosis(finalCustomerId, range.from(), range.to(), toolContext),
-                            toolCalls, this::summarizeDiagnosis);
-                }
-                if (shouldQuerySla(message) && customer != null) {
-                    String serviceType = waybillDetail != null && waybillDetail.waybill() != null ? waybillDetail.waybill().serviceType() : null;
-                    CustomerProfile finalCustomer = customer;
-                    slaRules = callTool("querySlaRules", "level=" + customer.customerLevel() + ",serviceType=" + serviceType,
-                            () -> logisticsTools.querySlaRules(finalCustomer.customerLevel(), serviceType, toolContext),
-                            toolCalls, rows -> "返回 " + safeSize(rows) + " 条 SLA/合同规则");
-                }
-            } else if (message.contains("高风险客户") || message.contains("风险客户")) {
-                highRiskCustomers = callTool("queryHighRiskCustomers", "limit=10",
-                        () -> logisticsTools.queryHighRiskCustomers(10, toolContext), toolCalls,
-                        rows -> "返回 " + safeSize(rows) + " 个风险客户");
-            }
-
-            String riskLevel = resolveRiskLevel(message, suspicious, toolCalls, customerId, waybillId);
-            String answer = buildAnswer(message, range, suspicious, customer, waybillDetail, waybills, exceptions,
-                    tickets, slaRules, diagnosis, highRiskCustomers, knowledgeResults, toolCalls);
-            answer = masker.maskText(answer);
-            long latencyMs = (System.nanoTime() - started) / 1_000_000;
-
-            auditService.recordTrace(traceId, context, request, answer, riskLevel, latencyMs);
-            auditService.recordToolCalls(traceId, toolCalls);
-            auditService.recordRagAudit(traceId, context, searchDiagnostics);
-            log.info("agent.chat.completed latencyMs={} riskLevel={} citations={} toolCalls={}",
-                    latencyMs, riskLevel, citations.size(), toolCalls.size());
-
-            return new AgentChatResponse(
-                    traceId,
-                    request.conversationId(),
-                    newMessageId(),
-                    answer,
-                    riskLevel,
-                    confidence(toolCalls, knowledgeResults, customerId, waybillId),
-                    citations,
-                    toolCalls,
-                    Instant.now()
-            );
+            return buildLocalChatResponse(request, context, toolContext, message, range, suspicious, searchDiagnostics,
+                    citations, traceId, started, toolCalls, customerId, waybillId);
         } finally {
             closeMdc(mdc);
         }
+    }
+
+    public AgentChatResponse chatStream(AgentChatRequest request, LlmStreamListener streamListener) {
+        LlmStreamListener listener = streamListener == null ? new LlmStreamListener() {
+        } : streamListener;
+        long started = System.nanoTime();
+        String traceId = "trace-" + DateTimeFormatter.BASIC_ISO_DATE.format(seedDate) + "-" + UUID.randomUUID().toString().substring(0, 8);
+        AgentUserContext context = AgentUserContext.from(request.tenantId(), request.userId(), request.roles());
+        List<MDC.MDCCloseable> mdc = openTraceMdc(traceId, context, request.conversationId());
+        ToolContext toolContext = logisticsTools.toolContext(context);
+        try {
+            log.info("agent.chat.stream.started");
+            listener.onStatus("已接收问题");
+            String message = request.message() == null ? "" : request.message().trim();
+            DateRange range = resolveDateRange(message);
+            boolean suspicious = promptInjectionGuard.isSuspicious(message);
+
+            List<ToolCallSummary> toolCalls = new ArrayList<>();
+            String customerId = extractCustomerId(message);
+            String waybillId = extractWaybillId(message);
+
+            listener.onStatus("正在检索知识库");
+            KnowledgeSearchDiagnostics searchDiagnostics = knowledgeSearchService.searchWithDiagnostics(context, message, 4);
+            List<KnowledgeSearchResult> knowledgeResults = searchDiagnostics.results();
+            log.info("agent.chat.stream.retrieval mode={} topK={} vectorReady={} candidates={} returned={} knowledgeVersion={}",
+                    searchDiagnostics.retrievalMode(), searchDiagnostics.requestedTopK(), searchDiagnostics.vectorReady(),
+                    searchDiagnostics.candidateCount(), searchDiagnostics.returnedCount(), searchDiagnostics.knowledgeVersion());
+            List<Citation> citations = shouldReturnCitations(request)
+                    ? knowledgeResults.stream().map(this::toCitation).toList()
+                    : List.of();
+
+            if (!suspicious) {
+                Optional<AgentChatResponse> modelResponse = tryModelStream(request, context, message, searchDiagnostics,
+                        citations, traceId, started, toolCalls, customerId, waybillId, listener);
+                if (modelResponse.isPresent()) {
+                    return modelResponse.get();
+                }
+            }
+
+            listener.onStatus("模型不可用，正在生成本地规则兜底回答");
+            AgentChatResponse response = buildLocalChatResponse(request, context, toolContext, message, range, suspicious,
+                    searchDiagnostics, citations, traceId, started, toolCalls, customerId, waybillId);
+            for (String chunk : answerChunks(response.answer())) {
+                listener.onDelta(chunk);
+            }
+            return response;
+        } finally {
+            closeMdc(mdc);
+        }
+    }
+
+    private AgentChatResponse buildLocalChatResponse(AgentChatRequest request,
+                                                     AgentUserContext context,
+                                                     ToolContext toolContext,
+                                                     String message,
+                                                     DateRange range,
+                                                     boolean suspicious,
+                                                     KnowledgeSearchDiagnostics searchDiagnostics,
+                                                     List<Citation> citations,
+                                                     String traceId,
+                                                     long started,
+                                                     List<ToolCallSummary> toolCalls,
+                                                     String customerId,
+                                                     String waybillId) {
+        CustomerProfile customer = null;
+        WaybillDetail waybillDetail = null;
+        List<WaybillSummary> waybills = List.of();
+        List<ExceptionEvent> exceptions = List.of();
+        List<TicketRecord> tickets = List.of();
+        List<SlaRule> slaRules = List.of();
+        DiagnosisReport diagnosis = null;
+        List<CustomerProfile> highRiskCustomers = List.of();
+
+        if (waybillId != null) {
+            waybillDetail = callTool("getWaybillDetail", "waybillId=" + waybillId,
+                    () -> logisticsTools.getWaybillDetail(waybillId, toolContext), toolCalls, this::summarizeWaybillDetail);
+            if (waybillDetail != null && waybillDetail.waybill() != null) {
+                customerId = customerId == null ? waybillDetail.waybill().customerId() : customerId;
+                customer = waybillDetail.customer();
+            }
+        }
+
+        if (customerId != null) {
+            String finalCustomerId = customerId;
+            boolean customerLevelQuestion = waybillId == null
+                    || containsAny(message, "客户", "最近", "为什么", "诊断", "摘要", "投诉量", "上升", "风险");
+            customer = customer == null
+                    ? callTool("getCustomerProfile", "customerId=" + finalCustomerId,
+                    () -> logisticsTools.getCustomerProfile(finalCustomerId, toolContext), toolCalls, this::summarizeCustomer)
+                    : customer;
+
+            if (customerLevelQuestion && shouldQueryWaybills(message, waybillId)) {
+                String status = message.contains("异常") ? "EXCEPTION" : null;
+                waybills = callTool("queryCustomerWaybills", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                        () -> logisticsTools.queryCustomerWaybills(finalCustomerId, range.from(), range.to(), status, 12, toolContext),
+                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条运单摘要");
+            }
+            if (customerLevelQuestion && shouldQueryExceptions(message)) {
+                exceptions = callTool("queryCustomerExceptions", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                        () -> logisticsTools.queryCustomerExceptions(finalCustomerId, range.from(), range.to(), null, 20, toolContext),
+                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条异常事件");
+            }
+            if (customerLevelQuestion && shouldQueryTickets(message)) {
+                tickets = callTool("queryCustomerTickets", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                        () -> logisticsTools.queryCustomerTickets(finalCustomerId, range.from(), range.to(), 20, toolContext),
+                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条工单/投诉");
+            }
+            if (customerLevelQuestion && shouldGenerateDiagnosis(message)) {
+                diagnosis = callTool("generateCustomerDiagnosis", "customerId=" + finalCustomerId + ",from=" + range.from() + ",to=" + range.to(),
+                        () -> logisticsTools.generateCustomerDiagnosis(finalCustomerId, range.from(), range.to(), toolContext),
+                        toolCalls, this::summarizeDiagnosis);
+            }
+            if (shouldQuerySla(message) && customer != null) {
+                String serviceType = waybillDetail != null && waybillDetail.waybill() != null ? waybillDetail.waybill().serviceType() : null;
+                CustomerProfile finalCustomer = customer;
+                slaRules = callTool("querySlaRules", "level=" + customer.customerLevel() + ",serviceType=" + serviceType,
+                        () -> logisticsTools.querySlaRules(finalCustomer.customerLevel(), serviceType, toolContext),
+                        toolCalls, rows -> "返回 " + safeSize(rows) + " 条 SLA/合同规则");
+            }
+        } else if (message.contains("高风险客户") || message.contains("风险客户")) {
+            highRiskCustomers = callTool("queryHighRiskCustomers", "limit=10",
+                    () -> logisticsTools.queryHighRiskCustomers(10, toolContext), toolCalls,
+                    rows -> "返回 " + safeSize(rows) + " 个风险客户");
+        }
+
+        List<KnowledgeSearchResult> knowledgeResults = searchDiagnostics.results();
+        String riskLevel = resolveRiskLevel(message, suspicious, toolCalls, customerId, waybillId);
+        String answer = buildAnswer(message, range, suspicious, customer, waybillDetail, waybills, exceptions,
+                tickets, slaRules, diagnosis, highRiskCustomers, knowledgeResults, toolCalls);
+        answer = masker.maskText(answer);
+        long latencyMs = (System.nanoTime() - started) / 1_000_000;
+
+        auditService.recordTrace(traceId, context, request, answer, riskLevel, latencyMs);
+        auditService.recordToolCalls(traceId, toolCalls);
+        auditService.recordRagAudit(traceId, context, searchDiagnostics);
+        log.info("agent.chat.completed latencyMs={} riskLevel={} citations={} toolCalls={} provider=local-rule",
+                latencyMs, riskLevel, citations.size(), toolCalls.size());
+
+        return new AgentChatResponse(
+                traceId,
+                request.conversationId(),
+                newMessageId(),
+                answer,
+                riskLevel,
+                confidence(toolCalls, knowledgeResults, customerId, waybillId),
+                citations,
+                toolCalls,
+                Instant.now()
+        );
     }
 
     private <T> T callTool(String toolName, String arguments, Supplier<T> supplier,
@@ -223,71 +289,125 @@ public class LogisticsAgentService {
         }
     }
 
-    private AgentChatResponse tryDeepSeekChat(AgentChatRequest request,
-                                              AgentUserContext context,
-                                              String message,
-                                              KnowledgeSearchDiagnostics searchDiagnostics,
-                                              List<Citation> citations,
-                                              String traceId,
-                                              long started,
-                                              List<ToolCallSummary> toolCalls,
-                                              String customerId,
-                                              String waybillId) {
-        ChatClient chatClient = deepSeekChatClient.getIfAvailable();
-        if (chatClient == null) {
-            return null;
-        }
-        long start = System.nanoTime();
-        try {
-            String answer = chatClient.prompt()
-                    .tools(logisticsTools)
-                    .toolContext(Map.of(
-                            "tenantId", context.tenantId(),
-                            "userId", context.userId(),
-                            "roles", context.roles()
-                    ))
-                            .user(buildDeepSeekUserPrompt(message, searchDiagnostics.results()))
-                            .call()
-                            .content();
-            long modelLatencyMs = (System.nanoTime() - start) / 1_000_000;
-            toolCalls.add(new ToolCallSummary(
-                    "deepSeekChatClient",
-                    "success",
-                    "DeepSeek ChatClient 已生成回答；Spring AI 内部工具调用由模型自动决策执行",
-                    modelLatencyMs,
-                    null
-            ));
+    private Optional<AgentChatResponse> tryModelChat(AgentChatRequest request,
+                                                     AgentUserContext context,
+                                                     String message,
+                                                     KnowledgeSearchDiagnostics searchDiagnostics,
+                                                     List<Citation> citations,
+                                                     String traceId,
+                                                     long started,
+                                                     List<ToolCallSummary> toolCalls,
+                                                     String customerId,
+                                                     String waybillId) {
+        Optional<LlmResponse> modelResponse = llmGateway.chat(llmRequest(request, context, message, searchDiagnostics,
+                traceId, "agent-chat", "logistics-chat"));
+        return modelResponse.map(response -> modelChatResponse(request, context, message, searchDiagnostics,
+                citations, traceId, started, toolCalls, customerId, waybillId, response));
+    }
 
-            String maskedAnswer = masker.maskText(answer);
-            String riskLevel = resolveRiskLevel(message, false, toolCalls, customerId, waybillId);
-            long latencyMs = (System.nanoTime() - started) / 1_000_000;
-            auditService.recordTrace(traceId, context, request, maskedAnswer, riskLevel, latencyMs);
-            auditService.recordToolCalls(traceId, toolCalls);
-            auditService.recordRagAudit(traceId, context, searchDiagnostics);
-            log.info("agent.chat.completed latencyMs={} riskLevel={} citations={} toolCalls={} provider=deepseek",
-                    latencyMs, riskLevel, citations.size(), toolCalls.size());
-            return new AgentChatResponse(
-                    traceId,
-                    request.conversationId(),
-                    newMessageId(),
-                    maskedAnswer,
-                    riskLevel,
-                    Math.min(0.94, confidence(toolCalls, searchDiagnostics.results(), customerId, waybillId)),
-                    citations,
-                    toolCalls,
-                    Instant.now()
-            );
-        } catch (RuntimeException ex) {
-            long modelLatencyMs = (System.nanoTime() - start) / 1_000_000;
-            toolCalls.add(new ToolCallSummary(
-                    "deepSeekChatClient",
-                    "failed",
-                    "DeepSeek 调用失败，已回退本地规则编排：" + ex.getMessage(),
-                    modelLatencyMs,
-                    "MODEL_ERROR"
-            ));
-            return null;
+    private Optional<AgentChatResponse> tryModelStream(AgentChatRequest request,
+                                                       AgentUserContext context,
+                                                       String message,
+                                                       KnowledgeSearchDiagnostics searchDiagnostics,
+                                                       List<Citation> citations,
+                                                       String traceId,
+                                                       long started,
+                                                       List<ToolCallSummary> toolCalls,
+                                                       String customerId,
+                                                       String waybillId,
+                                                       LlmStreamListener listener) {
+        LlmStreamListener maskingListener = new LlmStreamListener() {
+            @Override
+            public void onStatus(String status) {
+                listener.onStatus(status);
+            }
+
+            @Override
+            public void onDelta(String delta) {
+                listener.onDelta(masker.maskText(delta));
+            }
+
+            @Override
+            public void onUsage(com.superagent.logistics.llm.LlmUsage usage) {
+                listener.onUsage(usage);
+            }
+        };
+        Optional<LlmResponse> modelResponse = llmGateway.stream(llmRequest(request, context, message, searchDiagnostics,
+                traceId, "agent-chat", "logistics-chat"), maskingListener);
+        return modelResponse.map(response -> modelChatResponse(request, context, message, searchDiagnostics,
+                citations, traceId, started, toolCalls, customerId, waybillId, response));
+    }
+
+    private AgentChatResponse modelChatResponse(AgentChatRequest request,
+                                                AgentUserContext context,
+                                                String message,
+                                                KnowledgeSearchDiagnostics searchDiagnostics,
+                                                List<Citation> citations,
+                                                String traceId,
+                                                long started,
+                                                List<ToolCallSummary> toolCalls,
+                                                String customerId,
+                                                String waybillId,
+                                                LlmResponse response) {
+        toolCalls.add(new ToolCallSummary(
+                "llmGateway",
+                "success",
+                "模型网关已生成回答；route=" + response.routeKey() + "，provider=" + response.provider()
+                        + "，model=" + response.model() + tokenSummary(response),
+                response.latencyMs(),
+                null
+        ));
+        String maskedAnswer = masker.maskText(response.content());
+        String riskLevel = resolveRiskLevel(message, false, toolCalls, customerId, waybillId);
+        long latencyMs = (System.nanoTime() - started) / 1_000_000;
+        auditService.recordTrace(traceId, context, request, maskedAnswer, riskLevel, latencyMs);
+        auditService.recordToolCalls(traceId, toolCalls);
+        auditService.recordRagAudit(traceId, context, searchDiagnostics);
+        log.info("agent.chat.completed latencyMs={} riskLevel={} citations={} toolCalls={} provider={} model={} streaming={}",
+                latencyMs, riskLevel, citations.size(), toolCalls.size(), response.provider(), response.model(), response.streaming());
+        return new AgentChatResponse(
+                traceId,
+                request.conversationId(),
+                newMessageId(),
+                maskedAnswer,
+                riskLevel,
+                Math.min(0.94, confidence(toolCalls, searchDiagnostics.results(), customerId, waybillId)),
+                citations,
+                toolCalls,
+                Instant.now()
+        );
+    }
+
+    private LlmRequest llmRequest(AgentChatRequest request,
+                                  AgentUserContext context,
+                                  String message,
+                                  KnowledgeSearchDiagnostics searchDiagnostics,
+                                  String traceId,
+                                  String scene,
+                                  String routeKey) {
+        return new LlmRequest(
+                traceId,
+                context.tenantId(),
+                context.userId(),
+                request.conversationId(),
+                routeKey,
+                scene,
+                buildDeepSeekUserPrompt(message, searchDiagnostics.results()),
+                new Object[]{logisticsTools},
+                Map.of(
+                        "tenantId", context.tenantId(),
+                        "userId", context.userId(),
+                        "roles", context.roles()
+                )
+        );
+    }
+
+    private String tokenSummary(LlmResponse response) {
+        if (response.usage() == null || response.usage().totalTokens() == null) {
+            return "";
         }
+        String estimated = response.usage().estimated() ? "，estimated=true" : "";
+        return "，tokens=" + response.usage().totalTokens() + estimated;
     }
 
     private String buildDeepSeekUserPrompt(String message, List<KnowledgeSearchResult> knowledgeResults) {
@@ -402,7 +522,7 @@ public class LogisticsAgentService {
         if (message.contains("赔付") || message.contains("合同") || message.contains("责任")) {
             answer.append("- 涉及赔付、合同或责任认定时，本回答只能作为处理建议，最终结论需要人工复核合同和原始凭证。\n");
         } else {
-            answer.append("- 第一版使用本地规则编排和模拟数据，真实上线时建议接入实际 TMS/WMS/CRM 和 Spring AI ChatClient。\n");
+            answer.append("- 本地兜底回答基于规则编排和模拟业务数据，真实上线时建议接入实际 TMS/WMS/CRM，并通过模型网关统一治理模型调用。\n");
         }
 
         answer.append("\n引用来源：\n");
@@ -709,6 +829,21 @@ public class LogisticsAgentService {
             return compact;
         }
         return compact.substring(0, maxLength) + "...";
+    }
+
+    private List<String> answerChunks(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return List.of("");
+        }
+        List<String> chunks = new ArrayList<>();
+        int start = 0;
+        int chunkSize = 120;
+        while (start < answer.length()) {
+            int end = Math.min(answer.length(), start + chunkSize);
+            chunks.add(answer.substring(start, end));
+            start = end;
+        }
+        return chunks;
     }
 
     private record DateRange(LocalDate from, LocalDate to) {
