@@ -71,9 +71,12 @@ function statusClass(status: string) {
           <h2>依赖检查</h2>
           <p>{{ readiness?.application || 'logistics-agent' }}</p>
         </div>
-        <el-tag :type="readiness?.ready ? 'success' : 'danger'">{{
-          readiness?.ready ? 'READY' : 'NOT READY'
-        }}</el-tag>
+        <el-tag
+          :class="['readiness-tag', readiness?.ready ? 'is-ready' : 'is-not-ready']"
+          :type="readiness?.ready ? 'success' : 'danger'"
+          disable-transitions
+          >{{ readiness?.ready ? 'READY' : 'NOT READY' }}</el-tag
+        >
       </div>
       <div class="check-table">
         <div class="check-row check-head">
@@ -169,6 +172,28 @@ function statusClass(status: string) {
 .section-title h2 {
   margin: 0;
   font-size: 13px;
+}
+.readiness-tag {
+  min-width: 78px;
+  justify-content: center;
+  border-color: var(--line-strong);
+  font-weight: 700;
+}
+.readiness-tag.is-ready {
+  --el-tag-bg-color: #e7f6ec;
+  --el-tag-border-color: #92d2aa;
+  --el-tag-text-color: #0f5132;
+  color: #0f5132;
+  background-color: #e7f6ec;
+  border-color: #92d2aa;
+}
+.readiness-tag.is-not-ready {
+  --el-tag-bg-color: #fde8e8;
+  --el-tag-border-color: #f5a6a6;
+  --el-tag-text-color: #842029;
+  color: #842029;
+  background-color: #fde8e8;
+  border-color: #f5a6a6;
 }
 .check-table {
   overflow-x: auto;
